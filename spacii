@@ -12,7 +12,7 @@ import shutil
 import sys
 import time
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 TAU = math.pi * 2
 
 # ───────────────────────────── цвет ─────────────────────────────
@@ -200,7 +200,8 @@ KINDS = [(_tex_gas, 4), (_tex_terra, 3), (_tex_rock, 2), (_tex_mars, 2),
 class Planet:
     def __init__(self, rnd, R, x, y, kind=None, plain=False):
         self.R, self.x, self.y = R, float(x), float(y)
-        self.heat = 0.0
+        self.heat = self.flash = 0.0
+        self.craters, self.ct = [], 0
         self.rot = rnd.uniform(0, TW)
         self.spin = rnd.uniform(0.04, 0.12) * rnd.choice((1, 1, -1))
         self.speed = 0.012 + R * 0.004
@@ -282,6 +283,51 @@ class Planet:
         self.rot += self.spin
         for m in self.moons:
             m[2] += m[1]
+        if self.flash:
+            self.flash = self.flash * 0.9 if self.flash > 0.02 else 0.0
+        if self.craters:
+            self.ct += 1
+            if self.ct % 3 == 0:
+                for c in self.craters:
+                    c[1] = c[1] * 0.985 if c[1] > 0.03 else 0.0   # остыл: остаётся тёмный шрам
+                    self._paint(c)
+                self.craters = [c for c in self.craters if c[1] > 0]
+
+    def crater(self, px, py):
+        """Удар: светящееся пятно прямо в текстуре, вращается вместе с планетой и остывает."""
+        dx, dy, R = px - self.x, py - self.y, self.R
+        best = min(self.cells, key=lambda c: (c[0] - dx) ** 2 + ((c[1] - dy) * 2) ** 2)
+        u0, v0 = (best[2] + int(self.rot)) % TW, best[3]
+        rc = max(1.5, R * 0.3)                      # радиус в колонках экрана
+        ru, rv = max(1.2, rc * 7.6 / R), max(1.0, rc * 6.2 / R)
+        patch = []
+        for dv in range(-int(rv * 1.5) - 1, int(rv * 1.5) + 2):
+            v = v0 + dv
+            if not 0 <= v < TH:
+                continue
+            for du in range(-int(ru * 1.5) - 1, int(ru * 1.5) + 2):
+                q = (du / ru) ** 2 + (dv / rv) ** 2
+                if q < 2.2:
+                    u = (u0 + du) % TW
+                    patch.append((u, v, self.tex[v][u], q))
+        c = [patch, 1.0]
+        self._paint(c)
+        self.craters.append(c)
+
+    def _paint(self, c):
+        patch, heat = c
+        tex = self.tex
+        for u, v, (r, g, b, e), q in patch:
+            if q < 1:
+                k = heat * (1 - q * 0.5)
+                if k > 0:
+                    col = mix((r * 0.4, g * 0.4, b * 0.4), (1.0, 0.25 + 0.65 * k, 0.04),
+                              0.45 + k)
+                    tex[v][u] = (col[0], col[1], col[2], max(e, 0.3 + 0.65 * k))
+                else:
+                    tex[v][u] = (r * 0.4, g * 0.4, b * 0.4, e)
+            else:
+                tex[v][u] = (r * 0.7, g * 0.7, b * 0.7, e)
 
     def draw(self, put):
         cx, cy, R = int(round(self.x)), int(round(self.y)), self.R
@@ -297,7 +343,8 @@ class Planet:
                 front.append((cx + int(round(mx * 2 * R)), cy + int(round(my * R)), c))
         for dx, dy, ch, c in self.halo:
             put(cx + dx, cy + dy, ch, c)
-        tex, shift, n, heat = self.tex, int(self.rot), len(RAMP), self.heat
+        tex, shift, n = self.tex, int(self.rot), len(RAMP)
+        heat = self.heat if self.heat > self.flash else self.flash
         for dx, dy, ti, tj, lum in self.cells:
             r, g, b, e = tex[tj][(ti + shift) % TW]
             l = lum * 1.12 + 0.015
@@ -435,63 +482,270 @@ SPRITES = {
     "rock2": ([r"   __", r"  /. \_", r" (   , )", r"  \__./"], ROCK, {}, (), (0.2, 0.45), False),
     "rock3": ([r" (@)"], ROCK, {}, (), (0.2, 0.45), False),
     "rock4": ([r" o"], ROCK, {}, (), (0.2, 0.45), False),
+    # ── 1.2: новые типы ──
+    "patrol": ([
+        r"         _.*-*._",
+        r"  ]=____/_|___|_\_____",
+        r"  ]=|  [o] [o] [o]  __)>",
+        r"  ]=|______________/",
+    ], (0.85, 0.88, 0.95), {"o": (0.5, 0.85, 1.0), "[": (0.3, 0.45, 1.0), "]": (0.3, 0.45, 1.0),
+                            "=": GREY, ">": (1.0, 0.9, 0.5)}, (2,), (0.6, 0.9), True),
+    "speeder": ([
+        r"    ___",
+        r"  _/_o_\____",
+        r" =\________=>",
+    ], (1.0, 0.45, 0.2), {"o": (0.4, 0.9, 1.0), "=": (1.0, 0.85, 0.3)}, (2,), (0.9, 1.3), True),
+    "tug": ([
+        r"   _||_",
+        r" =[_o__]=-<",
+    ], (0.95, 0.75, 0.25), {"o": (0.4, 0.9, 1.0), "<": GREY, "-": GREY, "|": (1.0, 0.3, 0.25)},
+        (1,), (0.3, 0.5), True),
+    "explorer": ([
+        r"                     _.-'''''''-._",
+        r" [=========]o       '-.__________.-'",
+        r"       \ \             / /",
+        r"        \ \_____.-----' /",
+        r"         '(____________@)",
+    ], (0.82, 0.85, 0.9), {"o": (1.0, 0.35, 0.25), "=": (0.55, 0.65, 1.0), "@": (0.4, 0.8, 1.0),
+                           "[": (0.6, 0.65, 0.75), "]": (0.6, 0.65, 0.75)}, (), (0.35, 0.6), True),
+    "timecar": ([
+        r"      __________",
+        r"  ___/_|____|___\_____",
+        r" |=_.-._________.-.__=|>",
+        r"    '-'         '-'",
+    ], (0.8, 0.82, 0.86), {"=": (1.0, 0.35, 0.2), ">": (1.0, 0.9, 0.5), "|": (0.45, 0.65, 0.95),
+                           "'": GREY}, (), (0.3, 0.45), True),
+    "monolith": ([
+        r" .------.",
+        r" |      |",
+        r" |      |",
+        r" |      |",
+        r" |      |",
+        r" |      |",
+        r" |      |",
+        r" |      |",
+        r" '------'",
+    ], (0.26, 0.26, 0.3), {".": (0.5, 0.5, 0.56)}, (), (0.1, 0.14), False),
+    "policebox": ([
+        r"   [*]",
+        r"  .===.",
+        r"  |#|#|",
+        r"  |#|#|",
+        r"  |_|_|",
+    ], (0.2, 0.35, 0.9), {"#": (0.75, 0.88, 1.0)}, (), (0.12, 0.22), False),
+    "catbox": ([
+        r"  /\_/\ ",
+        r" ( o.o )",
+        r".-------.",
+        r"|       |",
+        r"'-------'",
+    ], (0.78, 0.6, 0.38), {"o": (0.4, 1.0, 0.4), "(": (0.85, 0.85, 0.85), ")": (0.85, 0.85, 0.85),
+                           "/": (0.85, 0.85, 0.85), "\\": (0.85, 0.85, 0.85), "_": (0.85, 0.85, 0.85),
+                           "?": (1.0, 0.9, 0.4)}, (), (0.06, 0.12), False),
+    "bsaucer": ([
+        r"       _/^\_",
+        r"  .--''-----''--.",
+        r" (__o__o__o__o__o)",
+        r"     `-------'",
+    ], (0.75, 0.75, 0.7), {"^": (1.0, 0.4, 0.3)}, (), (0.15, 0.25), False),
+    "droid": ([
+        r"   .---.",
+        r"  (o o o)",
+        r"  /|/|\|\ ",
+        r"  ' ' ' '",
+    ], (0.42, 0.44, 0.5), {"o": (1.0, 0.25, 0.2)}, (), (0.08, 0.15), False),
+    "sail": ([
+        r" ._________.",
+        r" |\       /|",
+        r" |  \   /  |",
+        r" |   (o)   |",
+        r" |  /   \  |",
+        r" |/_______\|",
+    ], (0.95, 0.82, 0.45), {"\\": (0.55, 0.57, 0.62), "/": (0.55, 0.57, 0.62), "o": W_,
+                            "(": W_, ")": W_}, (), (0.05, 0.09), False),
+    "dish": ([
+        r"  __",
+        r" |  `.",
+        r" |    )=-o",
+        r" |__.'",
+    ], GREY, {"o": (1.0, 0.4, 0.3), "=": (0.9, 0.8, 0.5), ")": W_}, (), (0.08, 0.15), True),
+    "cargotrain": ([
+        r"  ____     ______   ______   ______",
+        r" /_o__\___[######]=[++++++]=[::::::]",
+        r" '-------'------'-'------'-'------'",
+    ], (0.7, 0.72, 0.78), {"#": (0.95, 0.55, 0.2), "+": (0.35, 0.85, 0.45), ":": (0.4, 0.6, 1.0),
+                           "o": (1.0, 0.9, 0.5)}, (1,), (0.2, 0.32), True),
+    "hitchhiker": ([
+        r"    o",
+        r"  #/|--b",
+        r"  # |",
+        r"   / \ ",
+    ], W_, {"#": (0.95, 0.75, 0.25), "o": (1.0, 0.85, 0.7), "b": (1.0, 0.85, 0.7)},
+        (), (0.06, 0.1), False),
+    "petunias": ([
+        r"  *@*@*",
+        r"  \___/",
+    ], (0.75, 0.5, 0.3), {"*": (1.0, 0.45, 0.8), "@": (0.8, 0.35, 1.0)}, (), (0.0, 0.03), False),
+    "cow": ([
+        r"             ^__^",
+        r"     _______/(oo)",
+        r" /\/(       /(__)",
+        r"    | w----||",
+        r"    ||     ||",
+    ], W_, {"o": (0.3, 0.3, 0.3), "w": (1.0, 0.6, 0.7)}, (), (0.05, 0.1), True),
 }
 ANIM = {"jelly": {3: r"  (  ) (  )", 4: r"   ) ( ) (", 5: r"  (  )  ) )"}}
+# кадры целиком: (тиков на кадр, [кадр, ...]); первый кадр = арт из SPRITES
+FRAMES = {
+    "policebox": (9, [SPRITES["policebox"][0], [
+        r" .------.",
+        r" ||##|##|]*",
+        r" ||##|##|]",
+        r" '------'",
+    ], [
+        r"  |-|-|",
+        r"  |#|#|",
+        r"  |#|#|",
+        r"  '==='",
+        r"   [*]",
+    ], [
+        r"   .------.",
+        r" *[|##|##||",
+        r"  [|##|##||",
+        r"   '------'",
+    ]]),
+    "catbox": (26, [SPRITES["catbox"][0]] * 3 + [[
+        r"",
+        r"    ?",
+        r".-------.",
+        r"|       |",
+        r"'-------'",
+    ]]),
+}
+# машет рукой: два чередующихся набора замен строк
+WAVE = {"astronaut": ({0: r"   .-.  /", 1: r"  ( @ )/", 2: r"  /|#|"}, {1: r"  ( @ )__", 2: r"  /|#|"}),
+        "hitchhiker": ({}, {0: r"    o  b", 1: r"  #/|_/"})}
+# мигалки: символ, цвета по очереди, тиков на смену
+BLINKS = {"patrol": ("*", ((1.0, 0.15, 0.15), (0.2, 0.35, 1.0)), 3),
+          "policebox": ("*", ((1.0, 1.0, 1.0), (0.35, 0.4, 0.6)), 7),
+          "bsaucer": ("o", ((1.0, 0.9, 0.3), (0.5, 0.45, 0.2), (1.0, 1.0, 1.0)), 5)}
 ROCKS = ["rock1", "rock2", "rock3", "rock3", "rock4", "rock4", "rock4"]
-SHIP_WEIGHTS = ["rocket"] * 3 + ["fighter"] * 3 + ["ufo"] * 2 + ["satellite"] * 2 + \
+SHIP_WEIGHTS = ["rocket"] * 4 + ["fighter"] * 4 + ["ufo"] * 2 + ["satellite"] * 2 + \
                ["probe"] * 2 + ["ion"] * 2 + ["freighter", "astronaut", "orbital", "car",
-                                              "teapot", "rock2"]
-JUMPERS = ("fighter", "rocket", "freighter")
+                                              "teapot", "rock2"] + \
+               ["policebox", "explorer", "bsaucer", "catbox", "droid", "sail", "dish",
+                "cargotrain", "monolith", "patrol", "cow"]
+JUMPERS = ("fighter", "rocket", "freighter", "explorer")
 BLINK = [(1.0, 0.25, 0.25), (1.0, 0.85, 0.2), (0.3, 1.0, 0.4), (0.3, 0.8, 1.0), (0.9, 0.4, 1.0)]
+DRIFTERS = ("astronaut", "satellite", "probe", "teapot", "car", "orbital", "policebox", "catbox",
+            "droid", "sail", "dish", "hitchhiker", "cow")
+# кого астероид может разбить, кого не тянет чёрная дыра, в кого может целиться станция
+FRAGILE = {"rocket", "fighter", "ion", "probe", "satellite", "freighter", "car", "speeder",
+           "patrol", "tug", "explorer", "timecar", "dish", "droid", "teapot", "cargotrain", "sail"}
+HEAVY = {"whale", "orbital", "monolith", "destroyer", "policebox"}
+TARGETS = ("freighter", "destroyer", "cargotrain", "rocket", "explorer")
 
 
 class Ship:
     def __init__(self, rnd, name, W, H, d=None, x=None, y=None, vx=None):
         art, base, cmap, flames, (v0, v1), mirror = SPRITES[name]
-        self.name = name
-        self.dir = d or rnd.choice((1, -1))
-        flip = self.dir < 0 and mirror
-        width = max(len(l) for l in art)
-
-        def prep(l):
-            l = l.rstrip().ljust(width)
-            return l[::-1].translate(MIRROR) if flip else l
-        self.lines, self.w, self.h = [prep(l) for l in art], width, len(art)
-        self.alt = {j: prep(l) for j, l in ANIM.get(name, {}).items()}
+        self.name, self.rnd, self.mirror = name, rnd, mirror
+        fr = FRAMES.get(name)
+        self.period, self.raw = (fr[0], fr[1]) if fr else (0, [art])
+        self.w = max(len(l) for f in self.raw for l in f)
+        self.h = max(len(f) for f in self.raw)
         self.base = rgb(*base)
-        self.cmap = {(k.translate(MIRROR) if flip else k): rgb(*v) for k, v in cmap.items()}
+        self._cmap = {k: rgb(*v) for k, v in cmap.items()}
+        bl = BLINKS.get(name)
+        self.blink = (bl[0], [rgb(*c) for c in bl[1]], bl[2]) if bl else None
         self.flames = flames
+        self.face(d or rnd.choice((1, -1)))
+        width = self.w
         self.vx = vx if vx is not None else rnd.uniform(v0, v1) * self.dir
-        self.vy = rnd.uniform(-0.02, 0.02) if name in ("astronaut", "satellite", "probe", "teapot",
-                                                       "car", "orbital") or name[:4] == "rock" else 0.0
+        self.vy = rnd.uniform(-0.02, 0.02) if name in DRIFTERS or name[:4] == "rock" else 0.0
         self.x = float(-width - 6 if self.dir > 0 else W + 6) if x is None else float(x)
         self.y = float(rnd.randint(1, max(1, H - self.h - 1))) if y is None else float(y)
         if name == "jelly":
             self.x = rnd.uniform(4, max(5, W - width - 4))
             self.y = H + 1 + rnd.uniform(0, 10)
             self.vy = -rnd.uniform(0.05, 0.1)
-        self.bob = {"ufo": 2.0, "abduction": 1.2, "whale": 1.6}.get(name, 0.0) * rnd.uniform(0.6, 1.2)
+        self.vx0, self.vy0 = self.vx, self.vy
+        self.bob = {"ufo": 2.0, "abduction": 1.2, "whale": 1.6, "bsaucer": 1.0}.get(name, 0.0) * \
+            rnd.uniform(0.6, 1.2)
         self.ph = rnd.uniform(0, TAU)
-        self.rnd = rnd
-        self.gun, self.prey, self.dead = 0, False, False
+        self.fph = rnd.randint(0, 7)
+        self.gun, self.dead = 0, False
+        self.team, self.hp, self.must, self.cool = 0, 1, False, 0
+        self.hidden, self.clip, self.thrust, self.wave = False, None, True, 0
+        self.rock = name in ROCKS
         self.jump = None
         if name in JUMPERS and x is None and rnd.random() < 0.3:
             self.jump = rnd.uniform(W * 0.3, W * 0.7)
 
+    def face(self, d):
+        """Развернуть спрайт (пересобирает строки; скорость не трогает)."""
+        self.dir = d
+        flip = d < 0 and self.mirror
+        w, h = self.w, self.h
+
+        def prep(l):
+            l = l.rstrip().ljust(w)
+            return l[::-1].translate(MIRROR) if flip else l
+        frames = []
+        for f in self.raw:
+            px, py = (w - max(len(l) for l in f)) // 2, (h - len(f)) // 2
+            rows = [""] * py + [" " * px + l for l in f]
+            frames.append([prep(l) for l in rows + [""] * (h - len(rows))])
+        self.frames, self.lines = frames, frames[0]
+        self.alt = {j: prep(l) for j, l in ANIM.get(self.name, {}).items()}
+        self.wav = [{j: prep(l) for j, l in v.items()} for v in WAVE.get(self.name, ())]
+        self.cmap = {(k.translate(MIRROR) if flip else k): c for k, c in self._cmap.items()}
+
+    @property
+    def cx(self):
+        return self.x + self.w / 2
+
+    @property
+    def cy(self):
+        return self.y + self.h / 2
+
     def step(self):
+        if self.wave:
+            self.wave -= 1
+        if self.name in ("jelly", "droid"):
+            if self.name == "droid" and self.rnd.random() < 0.015:
+                self.vy = self.rnd.uniform(-0.15, 0.15)
+            self.vx = self.vx0 + (self.vx - self.vx0) * 0.96
+            self.vy = self.vy0 + (self.vy - self.vy0) * 0.96
         self.x += self.vx
         self.y += self.vy
 
     def gone(self, W, H):
-        return self.dead or self.x > W + 90 or self.x < -self.w - 90 or self.y < -self.h - 2 \
-            or self.y > H + 14
+        return self.dead or self.x > W + 90 or self.x < -self.w - 90 or \
+            (self.y < -self.h - 2 and self.vy <= 0) or self.y > H + 14
 
     def draw(self, put, t):
+        if self.hidden:
+            return
+        if self.clip:
+            lo, hi = self.clip
+            put0 = put
+
+            def put(x, y, c, col):
+                if lo <= x < hi:
+                    put0(x, y, c, col)
         x0 = int(round(self.x))
         y0 = int(round(self.y + math.sin(t * 0.07 + self.ph) * self.bob))
-        lights = self.name in ("ufo", "abduction")
+        name = self.name
+        lights = name in ("ufo", "abduction")
+        lines = self.frames[(t // self.period + self.fph) % len(self.frames)] if self.period \
+            else self.lines
         alt = self.alt if (t // 9) % 2 else None
-        for j, line in enumerate(self.lines):
+        if self.wave and self.wav:
+            alt = self.wav[(t // 5) % 2]
+        blink, nb = self.blink, 0
+        cmap, base = self.cmap, self.base
+        for j, line in enumerate(lines):
             if alt and j in alt:
                 line = alt[j]
             s = line.strip()
@@ -499,19 +753,38 @@ class Ship:
                 continue
             a = len(line) - len(line.lstrip())
             for i, ch in enumerate(s):
-                c = self.cmap.get(ch, self.base)
+                c = cmap.get(ch, base)
                 if lights and j == 3 and ch == "o":
                     c = rgb(*BLINK[(i // 3 + t // 4) % len(BLINK)])
-                elif ch == "o" and self.name == "satellite" and (t // 12) % 2:
+                elif ch == "o" and name == "satellite" and (t // 12) % 2:
                     c = rgb(0.3, 0.08, 0.08)
+                elif blink and ch == blink[0]:
+                    c = blink[1][(nb + t // blink[2]) % len(blink[1])]
+                    nb += 1
                 put(x0 + a + i, y0 + j, ch, c if ch != " " else BLACK)
-            if j in self.flames:
+            if self.thrust and j in self.flames:
                 n = self.rnd.randint(2, 5)
                 for k in range(n):
                     heat = 1 - k / 5
                     c = rgb(1.0, 0.25 + 0.7 * heat * self.rnd.uniform(0.6, 1), 0.15 * heat)
                     fx = x0 + a - 1 - k if self.dir > 0 else x0 + a + len(s) + k
                     put(fx, y0 + j, self.rnd.choice("=~-:" if k < 3 else "-:."), c)
+        if name == "bsaucer":                       # реквизит на леске
+            c = rgb(0.32, 0.32, 0.34)
+            for y in range(0, y0):
+                put(x0 + 9, y, "|" if (y + t // 6) % 3 else ":", c)
+        elif name == "dish":                        # радиоволны
+            tip = x0 + (self.w if self.dir > 0 else -1)
+            d = self.dir
+            for k in range(3):
+                r = (t * 0.25 + k * 7) % 21
+                f = 1 - r / 21
+                c = rgb(0.4 * f, 0.9 * f, 0.6 * f)
+                x, sp = tip + d * int(r), 1 + int(r // 8)
+                put(x, y0 + 2, ")" if d > 0 else "(", c)
+                for q in range(1, sp + 1):
+                    put(x - d * (q - 1), y0 + 2 - q, "\\" if d > 0 else "/", c)
+                    put(x - d * (q - 1), y0 + 2 + q, "/" if d > 0 else "\\", c)
 
 
 class Streak:
@@ -627,11 +900,16 @@ class BlackHole:
                 elif d < 1.5 and py < 0:
                     self.cells.append((dx, dy, 3, math.atan2(py, px), (d - 1.15) / 0.35))
 
+        self.flare = 0
+
     def step(self):
         self.x -= 0.06
+        if self.flare:
+            self.flare -= 1
 
     def draw(self, put, t):
         cx, cy, sin = int(round(self.x)), int(round(self.y)), math.sin
+        fl = 1 + self.flare / 25
         for dx, dy, k, a, q in self.cells:
             if k == 0:
                 put(cx + dx, cy + dy, " ", BLACK)
@@ -640,7 +918,7 @@ class BlackHole:
                 put(cx + dx, cy + dy, "@" if b > 0.85 else "#", rgb(b, b * 0.85, b * 0.5))
             elif k == 2:
                 b = (0.55 + 0.45 * sin(a * 2 - t * 0.12 + q * 5)) * (1 - 0.5 * q) * \
-                    (1.15 if dx < 0 else 0.8)
+                    (1.15 if dx < 0 else 0.8) * fl
                 put(cx + dx, cy + dy, "=" if b > 0.6 else "-" if b > 0.35 else "·",
                     rgb(b, b * (0.75 - 0.35 * q), b * (0.4 - 0.3 * q)))
             else:
@@ -671,27 +949,34 @@ def _tex_station(side):
 class Station:
     """Боевая станция размером с луну."""
 
-    def __init__(self, rnd, W, H, target):
+    def __init__(self, rnd, W, H, target, hold=False):
         self.rnd, self.W = rnd, W
         self.R = R = max(4, min(8, H // 5))
         self.target = target
-        self.side = 1 if (target is None or target.x < W / 2) else -1   # 1: станция справа
+        tx, ty, tr = _aim(target) if target is not None else (0, 0, 0)
+        self.side = 1 if (target is None or tx < W / 2) else -1   # 1: станция справа
+        if hold:
+            self.side = rnd.choice((1, -1))
         self.p = p = Planet(rnd, R, 0, 0, kind=_tex_station(-self.side), plain=True)
         p.spin = p.speed = p.rot = 0.0
         self.ext = 2 * R + 3
         self.home = W + self.ext if self.side > 0 else -self.ext
         p.x = float(self.home)
-        ty = target.y + rnd.randint(-5, 5) if target else rnd.randint(R + 1, max(R + 1, H - R - 2))
+        ty = ty + rnd.randint(-5, 5) if target else rnd.randint(R + 1, max(R + 1, H - R - 2))
         p.y = float(max(R + 1, min(H - R - 2, ty)))
         self.stop = W * (0.85 if self.side > 0 else 0.15)
-        self.state, self.age, self.done = "in", 0, False
-        if target is None or abs(self.stop - target.x) < 2 * (R + target.R) + 8:
+        self.state, self.age, self.done, self.hold = "in", 0, False, hold
+        self.ship = target is not None and not isinstance(target, Planet)
+        if hold:
+            self.target = None
+        elif target is None or (not self.ship and abs(self.stop - tx) < 2 * (R + tr) + 8):
             self.target, self.state = None, "pass"
 
     def step(self, scene):
         p, s = self.p, self.side
         self.age += 1
-        if self.target is not None and self.target not in scene.planets:
+        tg = self.target
+        if tg is not None and (tg.dead if self.ship else tg not in scene.planets):
             self.target, self.state = None, "out"
         st = self.state
         if st == "pass":
@@ -700,14 +985,27 @@ class Station:
         elif st == "in":
             p.x -= 0.3 * s
             if (p.x - self.stop) * s <= 0:
+                self.state = "hold" if self.hold else "aim" if self.ship else "charge"
+                self.age = 0
+        elif st == "aim":                            # ждём, пока корабль выйдет на середину
+            tx = _aim(self.target)[0]
+            if self.W * 0.2 < tx < self.W * 0.8 and abs(tx - p.x) > 2 * self.R + 14:
                 self.state, self.age = "charge", 0
+            elif self.age > 700:
+                self.state = "out"
+        elif st == "hold":
+            pass
         elif st == "charge":
             if self.age > 50:
                 self.state, self.age = "fire", 0
         elif st == "fire":
-            self.target.heat = min(1.0, self.age / 38)
+            if not self.ship:
+                self.target.heat = min(1.0, self.age / 38)
             if self.age > 44:
-                scene.destroy(self.target)
+                if self.ship:
+                    scene.wreck(self.target, 2)
+                else:
+                    scene.destroy(self.target)
                 self.target, self.state, self.age = None, "wait", 0
         elif st == "wait":
             if self.age > 80:
@@ -740,7 +1038,8 @@ class Station:
                     rgb(0.2, 0.5 + 0.5 * r.random(), 0.2))
             put(dx, dy, "*", rgb(0.3 + 0.7 * k, 1, 0.3 + 0.7 * k))
         elif self.state == "fire":
-            tx, ty = int(round(self.target.x)), int(round(self.target.y))
+            tx, ty, _ = _aim(self.target)
+            tx, ty = int(round(tx)), int(round(ty))
             ex, ey = tx - dx, ty - dy
             n = max(abs(ex), abs(ey), 1)
             slope = ey / ex if ex else 9
@@ -782,12 +1081,21 @@ class Meteor:
 
 
 class Comet:
-    def __init__(self, rnd, W, H):
+    def __init__(self, rnd, W, H, planet=None):
         self.d = rnd.choice((1, -1))
         self.x = float(-2 if self.d > 0 else W + 2)
         self.y = float(rnd.randint(2, max(3, H - 4)))
         self.vx = rnd.uniform(0.3, 0.55) * self.d
         self.vy = rnd.uniform(-0.05, 0.05)
+        if planet is not None:                       # прицельно в планету, с упреждением
+            # бьём в тот край, от которого вращение пронесёт кратер через весь диск
+            self.d = -1 if planet.spin > 0 else 1
+            self.x = float(-2 if self.d > 0 else W + 2)
+            self.vx = 0.5 * self.d
+            self.y = float(max(1, min(H - 2, planet.y + rnd.uniform(-0.3, 0.3) * H)))
+            tx = planet.x - planet.speed * abs(planet.x - self.x) / (0.5 + planet.speed * self.d)
+            tx -= self.d * planet.R * 0.6
+            self.vy = (planet.y - self.y) / max(1.0, abs(tx - self.x) / 0.5)
         self.len = rnd.randint(18, 34)
         self.col = rnd.choice([(0.6, 0.9, 1.0), (0.75, 1.0, 0.8), (1.0, 0.85, 0.6)])
         self.rnd = rnd
@@ -816,10 +1124,981 @@ class Comet:
         put(x + self.d, int(round(y)), ")" if self.d > 0 else "(", rgb(*self.col))
 
 
+def _aim(o):
+    """Центр и радиус цели: планеты или корабля."""
+    if isinstance(o, Planet):
+        return o.x, o.y, o.R
+    return o.cx, o.cy, o.h / 2
+
+
+class Text:
+    """Короткая надпись или пузырёк: всплывает и гаснет. anchor: следовать за кораблём."""
+
+    def __init__(self, x, y, s, col, life=50, vy=-0.06, delay=0, anchor=None):
+        self.x, self.y, self.s, self.col = x, y, s, col
+        self.life, self.vy, self.delay, self.age, self.anchor = life, vy, delay, 0, anchor
+
+    def step(self):
+        if self.delay > 0:
+            self.delay -= 1
+            return
+        self.age += 1
+        self.y += self.vy
+
+    @property
+    def done(self):
+        return self.age >= self.life
+
+    def draw(self, put):
+        if self.delay > 0:
+            return
+        f = min(1.0, (self.life - self.age) / 15)
+        c = rgb(self.col[0] * f, self.col[1] * f, self.col[2] * f)
+        x, y = self.x, self.y
+        if self.anchor is not None:
+            x, y = x + self.anchor.x, y + self.anchor.y
+        x, y = int(round(x)), int(round(y))
+        for i, ch in enumerate(self.s):
+            put(x + i, y, ch, c)
+
+
+class Flash:
+    """Короткая вспышка: белое ядро и разлетающиеся искры."""
+
+    def __init__(self, rnd, x, y, R=2, col=(0.7, 0.85, 1.0), life=14):
+        self.x, self.y, self.R, self.col, self.life, self.age = x, y, R, col, life, 0
+        self.sparks = [(rnd.uniform(0, TAU), rnd.uniform(0.6, 1.25), rnd.choice("*+.'"))
+                       for _ in range(int(6 + R * 5))]
+
+    def step(self):
+        self.age += 1
+
+    @property
+    def done(self):
+        return self.age >= self.life
+
+    def draw(self, put):
+        k = self.age / self.life
+        x0, y0, col = int(round(self.x)), int(round(self.y)), self.col
+        rr = self.R * (0.5 + 1.2 * k)
+        if k < 0.4:
+            core = self.R * (0.9 - k)
+            w = rgb(1, 1, 1)
+            for dy in range(-int(core * 0.5), int(core * 0.5) + 1):
+                hw = int(core * math.sqrt(max(0.0, 1 - (dy / (core * 0.5 + 0.5)) ** 2)))
+                for dx in range(-hw, hw + 1):
+                    put(x0 + dx, y0 + dy, "@" if k < 0.2 else "#", w)
+        f = 1 - k
+        c = rgb(col[0] * f + 0.2 * f, col[1] * f + 0.1 * f, col[2] * f)
+        for a, q, ch in self.sparks:
+            put(x0 + int(round(math.cos(a) * rr * q * 2)), y0 + int(round(math.sin(a) * rr * q)),
+                ch, c)
+
+
+class Spaghetti:
+    """Корабль, растянутый и закрученный чёрной дырой."""
+
+    def __init__(self, rnd, s, hole):
+        self.h, self.age = hole, 0
+        parts = []
+        for j, line in enumerate(s.lines):
+            for i, ch in enumerate(line):
+                if ch != " ":
+                    px, py = (s.x + i - hole.x) / 2, s.y + j - hole.y
+                    parts.append([math.atan2(py, px), math.hypot(px, py), s.cmap.get(ch, s.base), ch])
+        self.parts = rnd.sample(parts, 70) if len(parts) > 70 else parts
+        self.lim = 0.95 * (hole.R + 0.3)
+
+    def step(self):
+        self.age += 1
+        for p in self.parts:
+            p[1] = self.lim * 0.9 + (p[1] - self.lim * 0.9) * 0.965
+            p[0] += 0.45 / (p[1] + 0.6)
+        self.parts = [p for p in self.parts if p[1] > self.lim]
+
+    @property
+    def done(self):
+        return not self.parts or self.age > 400
+
+    def draw(self, put):
+        hx, hy, cos, sin = self.h.x, self.h.y, math.cos, math.sin
+        glow = rgb(1.0, 0.7, 0.35)
+        for a, rad, c, ch in self.parts:
+            x, y = int(round(hx + cos(a) * rad * 2)), int(round(hy + sin(a) * rad))
+            if self.age > 6:
+                ch, c = ("~" if rad > self.lim * 1.6 else "-"), (c if rad > self.lim * 1.3 else glow)
+                b = a - 0.5 / (rad + 0.6)
+                put(int(round(hx + cos(b) * rad * 2)), int(round(hy + sin(b) * rad)), "-", c)
+            put(x, y, ch, c)
+
+
+PORTAL_COLS = [(0.6, 0.3, 1.0), (0.3, 0.8, 1.0), (0.95, 0.95, 1.0), (0.8, 0.45, 1.0), (0.3, 0.5, 1.0)]
+
+
+class Portal:
+    """Кольцо-портал: открывается, крутится, закрывается."""
+
+    def __init__(self, x, y, ry):
+        self.x, self.y, self.ry, self.k, self.open, self.t = x, y, ry, 0.0, True, 0
+        self.cols = [rgb(*c) for c in PORTAL_COLS]
+
+    def step(self):
+        self.t += 1
+        self.k = min(1.0, self.k + 0.07) if self.open else max(0.0, self.k - 0.07)
+
+    @property
+    def done(self):
+        return not self.open and self.k <= 0
+
+    def draw(self, put):
+        k = self.k
+        if k <= 0:
+            return
+        ry, rx = max(0.6, self.ry * k), max(1.0, 2.6 * k)
+        cols, nc = self.cols, len(self.cols)
+        x0, y0, n = int(round(self.x)), int(round(self.y)), int(ry)
+        for j in range(-n, n + 1):
+            off = int(round(rx * math.sqrt(max(0.0, 1 - (j / (n + 0.5)) ** 2))))
+            ca, cb = cols[(j + self.t // 2) % nc], cols[(-j + self.t // 2) % nc]
+            if abs(j) == n:
+                for i in range(-off, off + 1):
+                    put(x0 + i, y0 + j, "-", ca)
+            else:
+                put(x0 - off, y0 + j, "(", ca)
+                put(x0 + off, y0 + j, ")", cb)
+        for j in range(3):
+            a = self.t * 0.15 + j * TAU / 3
+            put(int(round(self.x + math.cos(a) * rx * 0.5)), int(round(self.y + math.sin(a) * ry * 0.5)),
+                "*" if j == 0 else ".", cols[(j + self.t // 3) % nc])
+
+
+class FireTrail:
+    """Две огненные полосы на месте исчезнувшей машины."""
+
+    def __init__(self, rnd, x, rows, d, length):
+        self.x, self.rows, self.d, self.len = int(round(x)), rows, d, max(8, min(70, int(length)))
+        self.rnd, self.age, self.life = rnd, 0, 120
+
+    def step(self):
+        self.age += 1
+
+    @property
+    def done(self):
+        return self.age >= self.life
+
+    def draw(self, put):
+        r, f = self.rnd, 1 - self.age / self.life
+        L = int(self.len * min(1.0, 1.4 * f))
+        for k, y in enumerate(self.rows):
+            for i in range(k * 3, L):
+                b = f * (1 - 0.6 * i / self.len) * r.uniform(0.55, 1.0)
+                if b < 0.1:
+                    continue
+                put(self.x - self.d * i, y, r.choice("~=-") if b > 0.35 else ".",
+                    rgb(1.0 * b + 0.2, 0.55 * b, 0.12 * b))
+
+
+class Align:
+    """Монолит встал на одну линию с планетой или звездой."""
+
+    def __init__(self, m, ty, tr):
+        self.m, self.ty, self.tr, self.age = m, ty, tr, 0
+
+    def step(self):
+        self.age += 1
+
+    @property
+    def done(self):
+        return self.age > 70
+
+    def draw(self, put):
+        m, a = self.m, self.age
+        f = 1 - a / 70
+        x = int(round(m.x)) + m.w // 2
+        top, bot = int(round(m.y)), int(round(m.y)) + m.h - 1
+        if self.ty > bot:
+            y0, y1 = bot + 1, int(round(self.ty - self.tr)) - 1
+        else:
+            y0, y1 = int(round(self.ty + self.tr)) + 1, top - 1
+        for y in range(y0, y1 + 1):
+            b = f * (0.55 + 0.45 * math.sin(y * 0.9 - a * 0.6))
+            put(x, y, "|" if b > 0.5 else ":", rgb(b, b * 0.92, b * 0.6))
+        rad = 3 + a * 0.25
+        c = rgb(0.9 * f, 0.85 * f, 0.55 * f)
+        cy = (top + bot) / 2
+        for i in range(int(rad * 6)):
+            th = i / (rad * 6) * TAU
+            put(x + int(round(math.cos(th) * rad * 2)), int(round(cy + math.sin(th) * rad)), ".", c)
+
+
+# ─────────────────────── сценки: взаимодействия ──────────────────────
+
+class Act:
+    """Сценарий с несколькими участниками. Корабли живут в scene.ships, сценка ими рулит."""
+    done = False
+    need = (0, 0)                                    # минимальные W, H
+
+    @classmethod
+    def fits(cls, sc):
+        return sc.W >= cls.need[0] and sc.H >= cls.need[1]
+
+    def step(self, sc):
+        pass
+
+    def under(self, put, t):
+        pass
+
+    def over(self, put, t):
+        pass
+
+
+def _clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+
+class Chase(Act):
+    """Патруль с мигалкой гонится за лихачом: тот уходит в прыжок или его берут лучом на буксир."""
+    need = (70, 10)
+
+    def __init__(self, sc):
+        r, H = sc.rnd, sc.H
+        self.d = d = r.choice((1, -1))
+        cop = sc.spawn("patrol", d=d, vx=d * 1.0)
+        sp = sc.spawn("speeder", d=d, vx=d * 0.95)
+        cop.vy = sp.vy = 0.0
+        cop.y = float(r.randint(2, max(2, H - cop.h - 3)))
+        sp.y = cop.y + 1
+        cop.x = sp.x - cop.w - 24 if d > 0 else sp.x + sp.w + 24
+        self.sp, self.cop = sp, cop
+        self.fate = r.choice(("jump", "tow", "tow"))
+        self.state, self.age = "chase", 0
+
+    def _hitch(self):
+        sp, cop = self.sp, self.cop
+        sp.x = cop.x + cop.w + 5 if self.d > 0 else cop.x - sp.w - 5
+
+    def step(self, sc):
+        sp, cop, d, W, H = self.sp, self.cop, self.d, sc.W, sc.H
+        self.age += 1
+        st = self.state
+        if cop.dead or (sp.dead and st in ("beam", "hold", "tow")):
+            if not sp.dead:
+                sp.thrust, sp.vx = True, d * 1.0
+            self.done = True
+            return
+        if st == "chase":
+            if sp.dead:
+                self.state = "lost"
+                return
+            sp.vy = 0.1 * math.cos(self.age * 0.06)
+            if (sp.y < 1 and sp.vy < 0) or (sp.y > H - sp.h - 1 and sp.vy > 0):
+                sp.vy = 0.0
+            cop.vy = (sp.y - 1 - cop.y) * 0.05
+            gap = sp.x - cop.x - cop.w if d > 0 else cop.x - sp.x - sp.w
+            front = sp.x + sp.w if d > 0 else sp.x
+            if self.fate == "jump":
+                if (front - W * (0.5 + 0.12 * d)) * d > 0:
+                    sc.fx.append(Streak(sp.x + (0 if d > 0 else sp.w), sp.y + 1, d, 1))
+                    sp.dead = True
+                    sc.fx.append(Text(cop.cx, cop.y - 1, "?", (1.0, 1.0, 0.6), 70, -0.03))
+                    self.state = "lost"
+            else:
+                cop.vx = d * 1.2
+                inside = (front - W * (0.5 + 0.2 * d)) * d < 0
+                if gap < 5 and inside:
+                    self.state, self.age = "beam", 0
+                elif (front - W / 2) * d > W / 2 + 10:
+                    self.done = True
+        elif st == "lost":
+            cop.vx += (d * 0.3 - cop.vx) * 0.03
+            cop.vy *= 0.9
+        elif st == "beam":
+            cop.vy *= 0.85
+            sp.vy = 0.0
+            sp.y += (cop.y + 1 - sp.y) * 0.15
+            cop.vx *= 0.95
+            sp.vx = cop.vx
+            self._hitch()
+            if abs(cop.vx) < 0.04:
+                cop.vx = sp.vx = 0.0
+                self.state, self.age = "hold", 0
+        elif st == "hold":
+            sp.thrust = False
+            sp.y = cop.y + 1
+            if self.age > 45:
+                cop.face(-d)
+                self.state = "tow"
+        elif st == "tow":
+            cop.vx += (-d * 0.55 - cop.vx) * 0.03
+            sp.vx = cop.vx
+            self._hitch()
+
+    def over(self, put, t):
+        if self.state not in ("beam", "hold", "tow"):
+            return
+        sp, cop, d = self.sp, self.cop, self.d
+        x0 = int(round(cop.x + cop.w)) if d > 0 else int(round(sp.x + sp.w))
+        x1 = int(round(sp.x)) + 1 if d > 0 else int(round(cop.x))
+        y = int(round(cop.y)) + 2
+        for x in range(x0, x1):
+            k = (x - t) % 3
+            put(x, y, "~" if k == 0 else "-", rgb(0.35, 0.75 + 0.25 * (k == 0), 1.0))
+
+
+class Docking(Act):
+    """Ракета подходит к орбитальной станции, стыкуется, стоит, отстыковывается и уходит."""
+    need = (90, 9)
+    NOSE = 17                                        # колонка носа ракеты
+
+    def __init__(self, sc):
+        r, H = sc.rnd, sc.H
+        st = sc.spawn("orbital", d=-1, vx=-0.5)
+        st.vy = 0.0
+        st.y = float(r.randint(2, max(2, H - 6)))
+        self.st, self.rk, self.state, self.age = st, None, "in", 0
+        self.tx = sc.W * r.uniform(0.52, 0.62)
+
+    def step(self, sc):
+        st, rk, n = self.st, self.rk, self.NOSE
+        self.age += 1
+        if st.dead or (rk is not None and rk.dead):
+            if rk is not None and not rk.dead:
+                rk.thrust, rk.vx = True, rk.dir * 0.8
+            if not st.dead:
+                st.vx = -0.1
+            self.done = True
+            return
+        s = self.state
+        if s == "in":
+            st.vx = -max(0.06, min(0.5, (st.x - self.tx) * 0.012))
+            if rk is None and st.x < sc.W * 0.85:
+                rk = self.rk = sc.spawn("rocket", d=1, vx=0.8)
+                rk.vy, rk.y = 0.0, st.y
+            if rk is not None:
+                gap = st.x - (rk.x + n)
+                rk.vx = st.vx + max(0.04, min(0.8, gap * 0.03))
+                if gap <= 0.3:
+                    rk.x, rk.thrust = st.x - n, False
+                    self.state, self.age = "dock", 0
+        elif s == "dock":
+            st.vx = -0.06
+            rk.vx, rk.x = st.vx, st.x - n
+            if self.age > 150:
+                self.state, self.age = "undock", 0
+        elif s == "undock":
+            rk.vx = st.vx - 0.1
+            if st.x - (rk.x + n) > 5:
+                rk.face(-1)
+                rk.thrust = True
+                self.state = "leave"
+        else:
+            rk.vx = max(-1.0, rk.vx - 0.02)
+            st.vx += (-0.1 - st.vx) * 0.02
+
+    def over(self, put, t):
+        if self.state == "dock":
+            on = (t // 6) % 2
+            x, y = int(round(self.st.x)), int(round(self.st.y))
+            put(x, y, "*" if on else ".", rgb(0.3, 1.0, 0.4) if on else rgb(0.1, 0.35, 0.15))
+            put(x, y + 3, "." if on else "*", rgb(0.1, 0.35, 0.15) if on else rgb(0.3, 1.0, 0.4))
+
+
+class Beamup(Act):
+    """НЛО зависает над астронавтом (или коровой), затягивает лучом; иногда роняет обратно."""
+    need = (60, 18)
+
+    def __init__(self, sc):
+        r, H = sc.rnd, sc.H
+        self.d = d = r.choice((1, -1))
+        name = "cow" if r.random() < 0.3 else "astronaut"
+        a = sc.spawn(name, d=d, vx=d * 0.4)
+        a.vy = 0.0
+        a.y = float(r.randint(9, max(9, H - a.h - 1)))
+        self.a, self.u, self.y0 = a, None, a.y
+        self.stop = sc.W * r.uniform(0.35, 0.65)
+        self.drop = r.random() < 0.35
+        self.zd = r.choice((1, -1))
+        self.state, self.age = "drift", 0
+
+    def step(self, sc):
+        a, u, r = self.a, self.u, sc.rnd
+        self.age += 1
+        s = self.state
+        if u is not None and u.dead:
+            if a.hidden:
+                a.dead = True
+            self.done = True
+            return
+        if a.dead and s in ("drift", "beam"):
+            if u is not None:
+                self.state, self.age = "zip", 99
+            else:
+                self.done = True
+            return
+        if s == "drift":
+            a.vx = self.d * max(0.05, min(0.4, abs(self.stop - a.cx) * 0.012))
+            if u is None and abs(self.stop - a.cx) < sc.W * 0.3:
+                ud = r.choice((1, -1))
+                u = self.u = sc.spawn("ufo", d=ud, vx=ud * 0.9)
+                u.bob, u.vy = 0.0, 0.0
+                u.y = a.y - u.h - 3
+            if u is not None:
+                dx = a.cx - u.cx
+                u.vx = a.vx + _clamp(dx * 0.04, -0.9, 0.9)
+                if abs(dx) < 0.7 and abs(self.stop - a.cx) < 10:
+                    self.state, self.age = "beam", 0
+        elif s == "beam":
+            a.vx *= 0.9
+            u.vx = a.vx
+            if self.age > 25:
+                a.vy = -0.09
+            if a.y <= u.y + u.h - 2:
+                a.hidden, a.vy = True, 0.0
+                self.state, self.age = "in", 0
+        elif s == "in":
+            a.vx = u.vx = 0.0
+            if self.drop and self.age > 50:
+                a.hidden, a.y, a.vy = False, u.y + u.h - 1, 0.14
+                self.state, self.age = "drop", 0
+            elif not self.drop and self.age > 20:
+                a.dead = True
+                self.state, self.age = "zip", 0
+        elif s == "drop":
+            if a.y >= self.y0:
+                a.y, a.vy, a.vx, a.wave = self.y0, 0.0, self.d * 0.06, 140
+                sc.fx.append(Text(a.cx, a.y - 1, "!", (1.0, 0.9, 0.4), 50, -0.04))
+                self.state, self.age = "zip", 0
+        elif s == "zip" and self.age > 15:
+            u.vx = _clamp(u.vx + self.zd * 0.07, -2.6, 2.6)
+            u.vy = -0.03
+
+    def under(self, put, t):
+        s, a = self.state, self.age
+        if not (s == "beam" and a > 4 or s == "in" and a < 12 or s == "drop"):
+            return
+        u, x = self.u, self.u.cx
+        y0, y1 = int(round(u.y)) + u.h, int(round(self.y0)) + self.a.h
+        for k, y in enumerate(range(y0, y1)):
+            hw = 2 + k * 0.7
+            b = 0.6 + 0.25 * math.sin(t * 0.5 + k)
+            c = rgb(b, b, 0.35 * b)
+            put(int(round(x - hw)), y, "/", c)
+            put(int(round(x + hw)), y, "\\", c)
+            dim = rgb(0.45 * b, 0.45 * b, 0.15 * b)
+            for i in range(int(-hw) + 1, int(hw)):
+                if (i + k + t // 2) % 4 == 0:
+                    put(int(x) + i, y, ".", dim)
+
+
+class Crash(Act):
+    """Астероид на встречном курсе: корабль разбивается, обломки потом собирает буксир."""
+    need = (60, 8)
+
+    def __init__(self, sc):
+        r, W, H = sc.rnd, sc.W, sc.H
+        d = r.choice((1, -1))
+        v = Ship(r, r.choice(("rocket", "fighter", "probe", "freighter", "cargotrain")), W, H, d=d)
+        k = Ship(r, "rock2", W, H, d=-d, vx=-d * r.uniform(0.3, 0.4))
+        v.jump, v.vy, k.vy = None, 0.0, 0.0
+        v.y = float(r.randint(1, max(1, H - v.h - 1)))
+        k.y = float(int(v.y + v.h / 2 - k.h / 2))
+        k.must = True
+        xm = W * r.uniform(0.4, 0.6)
+        tv = (xm - (v.x + v.w * (0.75 if d > 0 else 0.25))) / v.vx
+        tk = (xm - k.cx) / k.vx
+        self.wait = [[max(0, int(tk - tv)), v], [max(0, int(tv - tk)), k]]
+        self.v, self.k = v, k
+
+    def step(self, sc):
+        for w in self.wait:
+            if w[0] >= 0:
+                if w[0] == 0:
+                    sc.ships.append(w[1])
+                w[0] -= 1
+        if all(w[0] < 0 for w in self.wait) and (self.v.dead or self.k.dead):
+            self.done = True
+
+
+class Salvage(Act):
+    """Буксир прилетает за обломками и собирает их по одному."""
+
+    def __init__(self, sc):
+        W, H = sc.W, sc.H
+        pcs = [p for p in sc.debris if 0 <= p[0] < W and 0 <= p[1] < H] or sc.debris
+        ax = sum(p[0] for p in pcs) / len(pcs)
+        ay = sum(p[1] for p in pcs) / len(pcs)
+        d = -1 if ax > W / 2 else 1
+        tug = sc.spawn("tug", d=d, vx=d * 0.6)
+        tug.vy, tug.y = 0.0, float(_clamp(ay - 1, 0, H - 2))
+        self.tug, self.age, self.leave, self.grab, self.turn = tug, 0, False, 0, 0
+
+    def step(self, sc):
+        tug, W, H = self.tug, sc.W, sc.H
+        if tug.dead:
+            self.done = True
+            return
+        self.age += 1
+        self.grab -= self.grab > 0
+        self.turn -= self.turn > 0
+        pcs = [p for p in sc.debris if -2 <= p[0] < W + 2 and 0 <= p[1] < H]
+        if self.leave or not pcs or self.age > 2200:
+            self.leave = True
+            tug.vx += (tug.dir * 0.8 - tug.vx) * 0.04
+            tug.vy *= 0.9
+            return
+        clx = tug.x + tug.w if tug.dir > 0 else tug.x - 1
+        cly = tug.y + 1
+        p = min(pcs, key=lambda p: ((p[0] - clx) / 2) ** 2 + (p[1] - cly) ** 2)
+        dx, dy = p[0] - clx, p[1] - cly
+        if dx * tug.dir < -3 and not self.turn:
+            tug.face(-tug.dir)
+            self.turn = 40
+            return
+        dist = math.hypot(dx / 2, dy) + 1e-6
+        sp = min(0.5, 0.06 + dist * 0.04)
+        tug.vx += (dx / dist * sp - tug.vx) * 0.12
+        tug.vy += (dy / dist * sp - tug.vy) * 0.12
+        if abs(dx) < 1.6 and abs(dy) < 0.9:
+            sc.debris.remove(p)
+            self.grab = 5
+
+    def over(self, put, t):
+        if self.grab:
+            tug = self.tug
+            put(int(round(tug.x + tug.w if tug.dir > 0 else tug.x - 1)), int(round(tug.y)) + 1, "*",
+                rgb(1.0, 1.0, 0.6))
+
+
+BOLT_COLS = ((1.0, 0.35, 0.25), (0.3, 1.0, 0.3))
+
+
+class Battle(Act):
+    """Две эскадры навстречу друг другу: перестрелка, кто-то взрывается, остальные проходят."""
+    need = (90, 14)
+
+    def __init__(self, sc):
+        r, H = sc.rnd, sc.H
+        n = max(1, min(3, (H - 2) // 8))
+        self.teams = ([], [])
+        for k in range(n):
+            ly = int(1 + (k + 0.5) * (H - 2) / n)
+            for team, d, name in ((1, 1, "fighter"), (2, -1, "ion")):
+                for m in range(r.choice((1, 1, 2))):
+                    s = sc.spawn(name, d=d, vx=d * r.uniform(0.55, 0.7))
+                    s.vy, s.y = 0.0, float(ly - s.h // 2)
+                    s.x -= d * (m * 18 + r.uniform(0, 14))
+                    s.team, s.hp, s.cool = team, 2, r.randint(0, 12)
+                    self.teams[team - 1].append(s)
+
+    def step(self, sc):
+        r, W = sc.rnd, sc.W
+        alive = [[s for s in tm if not s.dead] for tm in self.teams]
+        if not alive[0] and not alive[1]:
+            self.done = True
+            return
+        for ti in (0, 1):
+            foes = alive[1 - ti]
+            for s in alive[ti]:
+                if not 0 < s.x < W - s.w:
+                    continue
+                s.cool -= 1
+                if s.cool > 0:
+                    continue
+                row = int(round(s.y)) + s.h // 2
+                for e in foes:
+                    if abs(int(round(e.y)) + e.h // 2 - row) <= 1 and 0 < (e.cx - s.cx) * s.dir < 75:
+                        sc.fire(s, BOLT_COLS[ti], 0.12)
+                        s.cool = r.randint(10, 18)
+                        break
+
+
+class Impact(Act):
+    """Комета врезается в планету: вспышка и светящийся кратер, который остывает."""
+    need = (50, 12)
+
+    def __init__(self, sc):
+        cands = [p for p in sc.planets if sc.W * 0.25 < p.x < sc.W * 0.85 and p.R >= 3]
+        if not cands:
+            self.done = True
+            return
+        self.p = max(cands, key=lambda p: p.R)
+        self.c = Comet(sc.rnd, sc.W, sc.H, planet=self.p)
+        sc.comets.append(self.c)
+
+    def step(self, sc):
+        c, p = self.c, self.p
+        if p not in sc.planets or c not in sc.comets:
+            self.done = True
+            return
+        rr = p.R + 0.35
+        if ((c.x - p.x) / (2 * rr)) ** 2 + ((c.y - p.y) / rr) ** 2 < 0.9:
+            sc.comets.remove(c)
+            p.flash = 0.55
+            p.crater(c.x, c.y)
+            sc.fx.append(Flash(sc.rnd, c.x, c.y, 2, (1.0, 0.85, 0.6), 16))
+            sc.fx.append(Explosion(sc.rnd, c.x, c.y, 1, [c.col, (1, 0.6, 0.2), (1, 1, 1)]))
+            self.done = True
+
+
+class Wormhole(Act):
+    """Корабль влетает в портал, тот схлопывается и открывается в другом месте.
+    Выходит тот же корабль, он же задом наперёд или что-нибудь совсем другое."""
+    need = (80, 12)
+    ODD = ("teapot", "car", "catbox", "petunias", "cow", "policebox", "whale")
+
+    def __init__(self, sc):
+        r, W, H = sc.rnd, sc.W, sc.H
+        self.d = d = r.choice((1, -1))
+        s = sc.spawn(r.choice(("rocket", "fighter", "freighter", "probe", "explorer")), d=d)
+        s.vy, s.vx = 0.0, d * max(0.45, abs(s.vx))
+        s.y = float(r.randint(2, max(2, H - s.h - 2)))
+        self.s, self.o, self.pb = s, None, None
+        self.ax = W * (0.42 if d > 0 else 0.58)
+        self.pa = Portal(self.ax, s.y + s.h // 2, s.h // 2 + 2)
+        self.state, self.age = "approach", 0
+
+    def step(self, sc):
+        r, W, H = sc.rnd, sc.W, sc.H
+        self.age += 1
+        self.pa.step()
+        if self.pb:
+            self.pb.step()
+        s, d, ax, st = self.s, self.d, self.ax, self.state
+        if st in ("approach", "enter") and s.dead:
+            self.pa.open, self.state = False, "end"
+        elif st == "approach":
+            front = s.x + s.w if d > 0 else s.x
+            if (front - ax) * d > 0:
+                s.clip = (-9999, int(ax)) if d > 0 else (int(ax) + 1, 9999)
+                self.state = "enter"
+        elif st == "enter":
+            rear = s.x if d > 0 else s.x + s.w
+            if (rear - ax) * d > 0:
+                s.dead, self.pa.open = True, False
+                self.state, self.age = "transit", 0
+        elif st == "transit" and self.age > 35:
+            q = r.random()
+            name, do = (s.name, d) if q < 0.5 else (r.choice(self.ODD), d) if q < 0.8 else (s.name, -d)
+            if H < len(SPRITES[name][0]) + 4:
+                name = s.name
+            o = Ship(r, name, W, H, d=do, x=0, y=0)
+            o.vx = do * max(0.25, abs(s.vx) if name == s.name else abs(o.vx))
+            o.vy, o.bob = 0.0, 0.0
+            bx = W * (r.uniform(0.3, 0.55) if do > 0 else r.uniform(0.45, 0.7))
+            lo = o.h // 2 + 1
+            by = r.randint(lo, max(lo, H - o.h + o.h // 2 - 1))
+            o.y = float(by - o.h // 2)
+            o.x = bx - o.w if do > 0 else bx
+            o.clip = (int(bx) + 1, 9999) if do > 0 else (-9999, int(bx))
+            self.o, self.bx = o, bx
+            self.pb = Portal(bx, by, o.h // 2 + 2)
+            self.state, self.age = "open", 0
+        elif st == "open" and self.age > 18:
+            sc.ships.append(self.o)
+            self.state = "exit"
+        elif st == "exit":
+            o = self.o
+            rear = o.x if o.dir > 0 else o.x + o.w
+            if o.dead or (rear - self.bx) * o.dir > 0:
+                o.clip, self.pb.open, self.state = None, False, "end"
+        elif st == "end" and self.pa.done and (self.pb is None or self.pb.done):
+            self.done = True
+
+    def over(self, put, t):
+        self.pa.draw(put)
+        if self.pb:
+            self.pb.draw(put)
+
+
+STATION_BOOM = [(0.85, 0.85, 0.9), (0.6, 0.6, 0.65), (1.0, 0.7, 0.3), (1.0, 0.4, 0.1), (1, 1, 1)]
+
+
+class Trench(Act):
+    """Звено истребителей проходит над экваториальным жёлобом станции и пускает торпеду."""
+    need = (90, 20)
+
+    @classmethod
+    def fits(cls, sc):
+        return sc.station is None and sc.W >= cls.need[0] and sc.H >= cls.need[1]
+
+    def __init__(self, sc):
+        r = sc.rnd
+        self.st = sc.station = Station(r, sc.W, sc.H, None, hold=True)
+        self.fs, self.torp, self.state, self.age = [], None, "wait", 0
+        self.win, self.lost = r.random() < 0.6, False
+
+    def step(self, sc):
+        r, st = sc.rnd, self.st
+        self.age += 1
+        p, d, s = st.p, st.side, self.state
+        if sc.station is not st and s != "after":
+            self.state = s = "after"
+        if s == "wait":
+            if st.state == "hold":
+                cy = int(round(p.y))
+                for k in range(3):
+                    f = sc.spawn("fighter", d=d, vx=d * 0.85)
+                    f.vy, f.y = 0.0, float(cy - 2)
+                    f.x -= d * k * 16
+                    self.fs.append(f)
+                self.state, self.age = "run", 0
+        elif s == "run":
+            alive = [f for f in self.fs if not f.dead]
+            for f in alive:
+                if abs(f.cx - p.x) < 2 * st.R + 8 and r.random() < 0.15:
+                    sc.fx.append(Flash(r, f.cx + r.uniform(-8, 8), f.cy + r.uniform(-2.5, 2.5), 1,
+                                       (0.5, 1.0, 0.4), 8))
+                    if not self.lost and f is not alive[0] and r.random() < 0.05:
+                        self.lost = True
+                        sc.wreck(f)
+            tp = self.torp
+            if tp is None:
+                if not alive:
+                    st.state, self.state = "out", "after"
+                else:
+                    lead = alive[0]
+                    front = lead.x + lead.w if d > 0 else lead.x
+                    if (front - (p.x - d * st.R)) * d > 0:
+                        self.torp = [front, p.y, d * 1.3]
+            else:
+                tp[0] += tp[2]
+                if (tp[0] - (p.x + d * st.R * 0.9)) * d > 0:
+                    self.torp = None
+                    if self.win:
+                        self.state, self.age = "boom", 0
+                    else:
+                        sc.fx.append(Explosion(r, tp[0], tp[1], 1, STATION_BOOM[2:]))
+                        self.state, self.age = "miss", 0
+        elif s == "boom":
+            if self.age % 5 == 0:
+                sc.fx.append(Explosion(r, p.x + r.uniform(-1.6, 1.6) * st.R,
+                                       p.y + r.uniform(-0.8, 0.8) * st.R, 1, STATION_BOOM[2:]))
+            if self.age > 45:
+                sc.fx.append(Explosion(r, p.x, p.y, st.R, STATION_BOOM))
+                sc.station, self.state = None, "after"
+        elif s == "miss":
+            if self.age > 90:
+                st.state, self.state = "out", "after"
+        elif all(f.dead for f in self.fs) and sc.station is not st:
+            self.done = True
+
+    def over(self, put, t):
+        tp = self.torp
+        if tp:
+            x, y = int(round(tp[0])), int(round(tp[1]))
+            put(x, y, "o", rgb(1.0, 1.0, 0.8))
+            for i in (1, 2):
+                put(x - (1 if tp[2] > 0 else -1) * i, y, "-", rgb(1.0, 0.6 - 0.2 * i, 0.2))
+
+
+class Hitchhike(Act):
+    """Автостопщик с полотенцем голосует; корабль тормозит, подбирает его и прыгает."""
+    need = (80, 10)
+
+    def __init__(self, sc):
+        r, H = sc.rnd, sc.H
+        h = sc.spawn("hitchhiker", d=1, vx=0.35)
+        h.vy, h.y = 0.0, float(r.randint(1, max(1, H - 5)))
+        self.h, self.f = h, None
+        self.stop = sc.W * r.uniform(0.25, 0.4)
+        self.state, self.age = "drift", 0
+
+    def step(self, sc):
+        h, f, r = self.h, self.f, sc.rnd
+        self.age += 1
+        s = self.state
+        if f is not None and f.dead:
+            if not h.dead:
+                h.vx = 0.06
+            self.done = True
+            return
+        if h.dead and s != "pause":
+            if f is not None:
+                f.thrust, f.vx = True, -0.5
+            self.done = True
+            return
+        if s == "drift":
+            h.vx = max(0.03, min(0.35, (self.stop - h.x) * 0.01))
+            if f is None and h.x > self.stop - 25:
+                f = self.f = sc.spawn(r.choice(("freighter", "rocket")), d=-1, vx=-0.6)
+                f.vy, f.y = 0.0, float(int(h.y + 2 - f.h // 2))
+            if f is not None:
+                gap = f.x - (h.x + h.w + 3)
+                f.vx = -max(0.0, min(0.6, gap * 0.02 + 0.015))
+                if gap < 0.5:
+                    f.vx = h.vx = 0.0
+                    f.thrust = False
+                    self.state, self.age = "wait", 0
+        elif s == "wait":
+            f.vx = h.vx = 0.0
+            if self.age == 15:
+                h.wave = 40
+            if self.age > 55:
+                h.vx = 0.12
+                self.state = "board"
+        elif s == "board":
+            f.vx = 0.0
+            if h.x + 4 > f.x + 1:
+                h.dead = True
+                sc.fx.append(Text(f.cx - 1, f.y - 1, "42", (1.0, 0.9, 0.4), 80, -0.04))
+                self.state, self.age = "pause", 0
+        elif s == "pause" and self.age > 45:
+            f.thrust = True
+            sc.fx.append(Streak(f.x + f.w, f.y + 1, -1, max(1, f.h - 2)))
+            f.dead, self.done = True, True
+
+
+class Timecar(Act):
+    """Машина разгоняется, искрит и исчезает во вспышке; остаются две огненные полосы."""
+    need = (70, 8)
+
+    def __init__(self, sc):
+        r = sc.rnd
+        self.d = d = r.choice((1, -1))
+        c = sc.spawn("timecar", d=d, vx=d * 0.4)
+        c.vy, c.y = 0.0, float(r.randint(1, max(1, sc.H - c.h - 2)))
+        self.c, self.x0, self.rnd = c, None, r
+        self.go = sc.W * (0.3 if d > 0 else 0.7)
+
+    def step(self, sc):
+        c, d = self.c, self.d
+        if c.dead:
+            self.done = True
+            return
+        front = c.x + c.w if d > 0 else c.x
+        if self.x0 is None:
+            if (front - self.go) * d > 0:
+                self.x0 = front
+            return
+        c.vx *= 1.03
+        if abs(c.vx) > 1.9 or (front - sc.W / 2) * d > sc.W / 2 - 3:
+            y = int(round(c.y))
+            sc.fx.append(Flash(sc.rnd, front, y + 1.5, 3, (0.6, 0.8, 1.0), 16))
+            sc.fx.append(FireTrail(sc.rnd, front - d * 5, [y + 3, y + 4], d, abs(front - self.x0)))
+            c.dead = self.done = True
+
+    def over(self, put, t):
+        c, r = self.c, self.rnd
+        if self.x0 is None or c.dead or abs(c.vx) < 0.8:
+            return
+        col = rgb(0.6, 0.85, 1.0)
+        for _ in range(4 + int(abs(c.vx) * 3)):
+            put(int(c.x + r.uniform(0, c.w)), int(round(c.y + r.uniform(-0.6, c.h - 0.4))),
+                r.choice("~-'`"), col)
+
+
+# силуэт: каждая непустая клетка вырезается из диска луны
+BIKE = [
+    r"             @@",
+    r"            @@@@    @@",
+    r"            @@@@   @@@@",
+    r"         @@  @@@@ @@@@@@",
+    r"          @@@@@@@@@@@@@@",
+    r"     @@@@@@   @@   @@@@@@",
+    r"    @@    @@   @@ @@    @@",
+    r"    @@    @@@@@@@@@@    @@",
+    r"     @@@@@@        @@@@@@",
+]
+
+
+class Moonbike(Act):
+    """Большая луна, и на её фоне силуэт велосипеда с пассажиром в корзинке."""
+    need = (70, 16)
+
+    def __init__(self, sc):
+        r, W, H = sc.rnd, sc.W, sc.H
+        self.R = R = max(5, min(10, H // 3))
+        self.cx = W * r.uniform(0.35, 0.65)
+        self.cy = r.randint(R + 1, max(R + 1, H - R - 2))
+        n, rr = Noise(r), R + 0.35
+        self.cells = []
+        for dy in range(-R - 1, R + 2):
+            for dx in range(-2 * R - 2, 2 * R + 3):
+                nx, ny = dx / (2 * rr), dy / rr
+                d2 = nx * nx + ny * ny
+                if d2 > 1:
+                    continue
+                g = 0.7 + 0.3 * math.sqrt(1 - d2)
+                if n.fbm(dx * 0.09, dy * 0.18, 3.3, 3) > 0.56:      # моря
+                    g *= 0.8
+                self.cells.append((dx, dy, "@" if g > 0.84 else "%" if g > 0.7 else "#", g))
+        self.x0 = self.bx = self.cx - 2 * R - 30
+        self.span = 4 * R + 32
+        self.age, self.fade = 0, 0.0
+
+    def _by(self):
+        k = (self.bx - self.x0) / self.span
+        return self.cy - 4 - 2.5 * math.sin(k * math.pi)
+
+    def step(self, sc):
+        self.age += 1
+        if self.bx < self.x0 + self.span:
+            self.fade = min(1.0, self.fade + 0.03)
+            if self.age > 35:
+                self.bx += 0.4
+        else:
+            self.fade -= 0.03
+            if self.fade <= 0:
+                self.done = True
+
+    def under(self, put, t):
+        f, cx, cy = self.fade, int(round(self.cx)), self.cy
+        for dx, dy, ch, g in self.cells:
+            b = g * f
+            put(cx + dx, cy + dy, ch, rgb(b, b * 0.95, b * 0.78))
+
+    def over(self, put, t):
+        if self.age <= 35:
+            return
+        x0, y0 = int(round(self.bx)), int(round(self._by()))
+        rr = self.R + 0.35
+        for j, line in enumerate(BIKE):
+            for i, ch in enumerate(line):
+                if ch == " ":
+                    continue
+                x, y = x0 + i, y0 + j
+                nx, ny = (x - self.cx) / (2 * rr), (y - self.cy) / rr
+                if nx * nx + ny * ny <= 1:
+                    put(x, y, " ", BLACK)
+
+
+class HoleFeed(Act):
+    """Подкидывает чёрной дыре пару кораблей и камней на близкий пролёт."""
+
+    def __init__(self, sc, hole):
+        self.h, self.n, self.wait = hole, sc.rnd.randint(2, 3), 0
+
+    def step(self, sc):
+        h, r = self.h, sc.rnd
+        if h not in sc.holes or self.n <= 0:
+            self.done = True
+            return
+        if h.x > sc.W - h.R * 4:
+            return
+        self.wait -= 1
+        if self.wait > 0:
+            return
+        s = sc.spawn(r.choice(("rocket", "fighter", "probe", "rock1", "rock3", "satellite")), d=1)
+        s.vy = 0.0
+        if s.rock:
+            s.vx = r.uniform(0.25, 0.4)
+        off = r.choice((-1, 1)) * r.uniform(2.0, 3.0) * h.R
+        s.y = float(_clamp(h.y + off - s.h / 2, 0, sc.H - s.h))
+        self.n -= 1
+        self.wait = r.randint(140, 260)
+
+
+ACTS = {"chase": Chase, "docking": Docking, "beamup": Beamup, "crash": Crash, "battle": Battle,
+        "impact": Impact, "wormhole": Wormhole, "trench": Trench, "hitchhike": Hitchhike,
+        "timecar": Timecar, "moonbike": Moonbike}
+
+
 # ───────────────────────────── сцена ────────────────────────────
 
 EVENTS = ["station", "dogfight", "formation", "asteroids", "blackhole", "supernova",
-          "whale", "jellies", "destroyer", "abduction"]
+          "whale", "jellies", "destroyer", "abduction",
+          "chase", "docking", "beamup", "crash", "battle", "impact", "wormhole", "trench",
+          "hitchhike", "timecar", "moonbike", "petunias", "monolith"]
 NEBULAE = [((0.75, 0.15, 0.7), (0.15, 0.3, 0.9)), ((0.1, 0.6, 0.65), (0.5, 0.2, 0.8)),
            ((0.85, 0.3, 0.2), (0.7, 0.15, 0.6)), ((0.2, 0.35, 0.9), (0.15, 0.7, 0.55))]
 TINTS = [(1, 1, 1), (1, 1, 1), (0.72, 0.82, 1.0), (1.0, 0.95, 0.72), (1.0, 0.76, 0.62)]
@@ -865,8 +2144,10 @@ class Scene:
             self.stars.append([r.uniform(0, W), r.randint(0, H - 1), layer, r.uniform(0, TAU),
                                r.uniform(0.03, 0.16), r.choice(TINTS),
                                layer == 2 and r.random() < 0.3])
+        self.giants = [s for s in self.stars if s[6]]
         self.planets, self.ships, self.meteors, self.comets = [], [], [], []
         self.fx, self.bolts, self.holes, self.station, self.deck = [], [], [], None, []
+        self.acts, self.debris, self.tug_in = [], [], None
         self.event_in = r.randint(160, 320)
         big = max(3, min(H // 3, W // 9, 13))
         if H >= 12:
@@ -930,8 +2211,7 @@ class Scene:
         for s in self.ships:
             s.step()
             if s.gun and t % s.gun == 0 and 0 < s.x < W:
-                self.bolts.append([s.x + (s.w if s.dir > 0 else -2), int(round(s.y)) + s.h // 2,
-                                   s.dir * 2.4, 45])
+                self.fire(s)
             if s.jump is not None and (s.x - s.jump) * s.dir > 0:
                 self.fx.append(Streak(s.x + (0 if s.dir > 0 else s.w), s.y + 1, s.dir,
                                       max(1, s.h - 2)))
@@ -940,12 +2220,17 @@ class Scene:
             b[0] += b[2]
             b[3] -= 1
             for s in self.ships:
-                if s.prey and not s.dead and s.x <= b[0] <= s.x + s.w and \
-                        s.y <= b[1] < s.y + s.h and r.random() < 0.3:
-                    self.fx.append(Explosion(r, s.x + s.w / 2, s.y + s.h / 2, 1,
-                                             [(1, 0.8, 0.3), (1, 0.4, 0.1), (0.8, 0.8, 0.8)]))
-                    s.dead, b[3] = True, 0
+                if s.team and s.team != b[5] and not s.dead and s.x <= b[0] <= s.x + s.w and \
+                        s.y <= b[1] < s.y + s.h and r.random() < b[6]:
+                    b[3] = 0
+                    s.hp -= 1
+                    if s.hp <= 0:
+                        self.wreck(s)
+                    else:
+                        self.fx.append(Flash(r, b[0], b[1], 1, (1.0, 0.8, 0.4), 8))
+                    break
         self.bolts = [b for b in self.bolts if b[3] > 0]
+        self.interact()
         for group in (self.meteors, self.comets, self.fx, self.holes):
             for e in group:
                 e.step()
@@ -953,16 +2238,40 @@ class Scene:
         self.holes = [h for h in self.holes if h.x > -h.ext - 2]
         if self.station:
             self.station.step(self)
-            if self.station.done:
+            if self.station and self.station.done:
                 self.station = None
-        self.ships = [s for s in self.ships if not s.gone(W, H)]
+        for a in self.acts:
+            a.step(self)
+        self.acts = [a for a in self.acts if not a.done]
+        keep = []
+        for s in self.ships:
+            if s.gone(W, H):
+                s.dead = True               # сценки узнают об уходе корабля по этому флагу
+            else:
+                keep.append(s)
+        self.ships = keep
         self.comets = [c for c in self.comets if not c.gone(W)]
         self.meteors = [m for m in self.meteors if m.age < m.life]
+        if self.debris:
+            for p in self.debris:
+                p[0] += p[2]
+                p[1] += p[3]
+                p[6] -= 1
+            self.debris = [p for p in self.debris if p[6] > 0 and -4 < p[0] < W + 4 and -3 < p[1] < H + 3]
+            if self.tug_in is not None and self.ships_on:
+                self.tug_in -= 1
+                if self.tug_in <= 0:
+                    self.tug_in = None
+                    if not any(isinstance(a, Salvage) for a in self.acts) and H >= 4:
+                        self.acts.append(Salvage(self))
         if self.ships_on:
             self.event_in -= 1
             if self.event_in <= 0:
-                self.event()
-                self.event_in = r.randint(450, 800)
+                if self.busy():
+                    self.event_in = 60
+                else:
+                    self.event()
+                    self.event_in = r.randint(300, 560)
         if r.random() < 0.012:
             self.meteors.append(Meteor(r, W, H))
         if self.ships_on:
@@ -983,27 +2292,172 @@ class Scene:
         self.fx.append(Explosion(self.rnd, planet.x, planet.y, planet.R, cols))
         self.planet_in = min(self.planet_in, 260)
 
+    # ─── помощники для сценок ───
+
+    def spawn(self, name, d=None, x=None, y=None, vx=None):
+        s = Ship(self.rnd, name, self.W, self.H, d=d, x=x, y=y, vx=vx)
+        s.jump = None
+        self.ships.append(s)
+        return s
+
+    def fire(self, s, col=(0.3, 1.0, 0.3), p=0.3):
+        self.bolts.append([s.x + (s.w if s.dir > 0 else -2), int(round(s.y)) + s.h // 2,
+                           s.dir * 2.4, 45, rgb(*col), s.team, p])
+
+    def wreck(self, s, big=1):
+        """Корабль взрывается; часть его символов остаётся дрейфовать обломками."""
+        r = self.rnd
+        s.dead = True
+        cx, cy = s.cx, s.cy
+        self.fx.append(Explosion(r, cx, cy, big, [(1, 0.8, 0.3), (1, 0.4, 0.1), (0.8, 0.8, 0.8)]))
+        cells = [(i, j, ch) for j, line in enumerate(s.lines) for i, ch in enumerate(line)
+                 if ch not in " _"]
+        room = 60 - len(self.debris)
+        for i, j, ch in r.sample(cells, max(0, min(len(cells), room, r.randint(6, 12)))):
+            x, y = s.x + i, s.y + j
+            self.debris.append([x, y, (x - cx) * 0.012 + r.uniform(-0.04, 0.04),
+                                (y - cy) * 0.02 + r.uniform(-0.02, 0.02), ch,
+                                s.cmap.get(ch, s.base), r.randint(1500, 2600)])
+        if self.tug_in is None:
+            self.tug_in = r.randint(120, 260)
+
+    def busy(self):
+        return len(self.acts) + (self.station is not None) >= 2 or len(self.ships) >= 10
+
+    def interact(self):
+        """Взаимодействия, которые работают и для обычных кораблей, не только в сценках."""
+        r, W, H, t = self.rnd, self.W, self.H, self.t
+        ships = self.ships
+        for h in self.holes:                          # гравитация чёрной дыры
+            reach = (h.R * 5.0) ** 2
+            for s in ships:
+                if s.dead or s.name in HEAVY:
+                    continue
+                dx, dy = (h.x - s.cx) / 2, h.y - s.cy
+                d2 = dx * dx + dy * dy
+                if d2 > reach:
+                    continue
+                d = math.sqrt(d2) + 1e-6
+                if d < h.R * 1.1:
+                    self.fx.append(Spaghetti(r, s, h))
+                    s.dead, h.flare = True, 25
+                    continue
+                a = 0.9 / max(d2, 1.0)
+                s.vx += a * dx / d * 2
+                s.vy += a * dy / d
+            for p in self.debris:
+                dx, dy = (h.x - p[0]) / 2, h.y - p[1]
+                d2 = dx * dx + dy * dy
+                if d2 < reach:
+                    d = math.sqrt(d2) + 1e-6
+                    if d < h.R * 0.9:
+                        p[6] = 0
+                    a = 0.9 / max(d2, 1.0)
+                    p[2] += a * dx / d * 2 - dy / d * 0.01
+                    p[3] += a * dy / d + dx / d * 0.005
+        rocks = [s for s in ships if s.rock and not s.dead]
+        if rocks:                                     # астероид против корабля
+            for s in ships:
+                if s.dead or s.name not in FRAGILE:
+                    continue
+                for k in rocks:
+                    kx, ky = k.cx, k.cy
+                    if s.x + 1 <= kx <= s.x + s.w - 1 and s.y <= ky <= s.y + s.h - 0.5 and \
+                            (k.must or r.random() < 0.2):
+                        self.wreck(s)
+                        if k.w < 5:
+                            k.dead = True
+                        break
+        for w in ships:
+            nm = w.name
+            if nm == "whale" and not w.dead:          # кит глотает мелочь
+                wy = w.y + math.sin(t * 0.07 + w.ph) * w.bob
+                mx = w.x + w.w - 3 if w.dir > 0 else w.x + 3
+                for s in ships:
+                    if s is not w and not s.dead and (s.name == "probe" or s.name in ("rock3", "rock4")) \
+                            and abs(s.cx - mx) < 3.5 and abs(s.cy - (wy + 2)) < 1.6:
+                        s.dead = True
+                        bx = w.x + (w.w * 0.75 if w.dir > 0 else w.w * 0.25)
+                        for i, ch in enumerate("oO"):
+                            self.fx.append(Text(bx - w.x, wy - w.y - 1, ch, (0.6, 0.9, 1.0), 40,
+                                                -0.08, i * 14, anchor=w))
+            elif nm == "jelly" and not w.dead:        # медузы разлетаются от кораблей
+                for s in ships:
+                    if s.name != "jelly" and abs(s.vx) > 0.15 and \
+                            abs(s.cx - w.cx) < (s.w + w.w) / 2 + 4 and abs(s.cy - w.cy) < (s.h + w.h) / 2 + 2:
+                        w.vx += (0.12 if w.cx > s.cx else -0.12)
+                        w.vy += (0.05 if w.cy > s.cy else -0.05)
+                        break
+            elif nm == "astronaut" and not w.wave and not w.hidden and t % 10 == 0:
+                for s in ships:
+                    if s is not w and not s.rock and abs(s.cx - w.cx) < 26 and abs(s.cy - w.cy) < 9 \
+                            and abs(s.vx) > 0.2:
+                        w.wave = 60
+                        break
+            elif nm == "monolith" and not w.dead:     # выравнивание
+                if w.cool > 0:
+                    w.cool -= 1
+                    continue
+                mx = w.cx
+                if not 0 < mx < W:
+                    continue
+                for p in self.planets:
+                    if abs(mx - p.x) < 0.5:
+                        self.fx.append(Align(w, p.y, p.R + 0.5))
+                        p.flash, w.cool = max(p.flash, 0.3), 400
+                        break
+                else:
+                    for s in self.giants:
+                        if abs(mx - s[0]) < 0.4 and abs(s[1] - w.cy) > w.h:
+                            self.fx.append(Align(w, s[1], 0))
+                            w.cool = 400
+                            break
+
     def event(self, name=None):
+        """Именованное событие или следующее из колоды (без повторов, пока не сыграны все)."""
+        if name:
+            return self._event(name)
+        for _ in range(len(EVENTS)):
+            if not self.deck:
+                self.deck = EVENTS[:]
+                self.rnd.shuffle(self.deck)
+            if self._event(self.deck.pop()):
+                return True
+        return False
+
+    def _event(self, name):
         r, W, H = self.rnd, self.W, self.H
-        if not self.deck:
-            self.deck = EVENTS[:]
-            r.shuffle(self.deck)
-        name = name or self.deck.pop()
         d = r.choice((1, -1))
         add = self.ships.append
+        act = ACTS.get(name)
+        if act is not None:
+            if not act.fits(self):
+                return False
+            a = act(self)
+            if a.done:
+                return False
+            self.acts.append(a)
+            return True
         if name == "station":
             if self.station or H < 20 or W < 80:
-                return
+                return False
             cands = [p for p in self.planets if W * 0.12 < p.x < W * 0.88]
-            self.station = Station(r, W, H, max(cands, key=lambda p: p.R) if cands else None)
+            if cands:
+                target = max(cands, key=lambda p: p.R)
+            else:                                     # планеты нет: целится в корабль
+                ships = [s for s in self.ships if not s.dead and s.name in TARGETS and
+                         W * 0.25 < s.cx < W * 0.75]
+                target = r.choice(ships) if ships else self.spawn(r.choice(("freighter", "destroyer")))
+                target.jump = None
+            self.station = Station(r, W, H, target)
         elif name == "dogfight":
             prey = Ship(r, "fighter", W, H, d=d, vx=d * 0.8)
-            prey.prey, prey.jump = True, None
+            prey.team, prey.jump = 1, None
             add(prey)
             for k, dy in ((1, 3), (2, -3)):
                 c = Ship(r, "ion", W, H, d=d, x=prey.x - d * (12 * k + 8), y=prey.y + dy,
                          vx=prey.vx * 1.04)
-                c.gun = r.randint(9, 14)
+                c.gun, c.team = r.randint(9, 14), 2
                 add(c)
         elif name == "formation":
             lead = Ship(r, r.choice(("ion", "fighter")), W, H, d=d)
@@ -1019,8 +2473,12 @@ class Scene:
                 s.x -= d * r.uniform(0, 70)
                 add(s)
         elif name == "blackhole":
-            if not self.holes and H >= 20:
-                self.holes.append(BlackHole(r, W, H))
+            if self.holes or H < 20:
+                return False
+            h = BlackHole(r, W, H)
+            self.holes.append(h)
+            if W >= 70:
+                self.acts.append(HoleFeed(self, h))
         elif name == "supernova":
             self.fx.append(Explosion(r, r.randint(8, max(9, W - 8)), r.randint(4, max(5, H - 4)), 2,
                                      [(1, 1, 1), (0.6, 0.8, 1), (1, 0.7, 0.9), (1, 0.9, 0.6)],
@@ -1028,8 +2486,42 @@ class Scene:
         elif name == "jellies":
             for _ in range(r.randint(3, 6)):
                 add(Ship(r, "jelly", W, H))
-        elif H >= len(SPRITES[name][0]) + 2:
+        elif name == "whale":
+            if H < 7:
+                return False
+            w = Ship(r, "whale", W, H, d=d)
+            add(w)
+            if r.random() < 0.5 and W >= 70:           # навстречу летит зонд: кит его глотает
+                w.bob = 0.4
+                p = self.spawn("probe", d=-d, vx=-d * 0.4)
+                p.vy, p.y = 0.0, w.y + 1
+        elif name == "petunias":                       # кит и горшок с петуниями падают сверху
+            if H < 14:
+                return False
+            w = self.spawn("whale", d=d, x=r.uniform(W * 0.15, max(W * 0.15, W * 0.75 - 34)), y=-5,
+                           vx=d * 0.03)
+            w.vy, w.bob = 0.14, 0.0
+            p = self.spawn("petunias", x=w.x + (w.w + 5 if r.random() < 0.5 else -12), y=-3, vx=w.vx)
+            p.vy = 0.16
+            self.fx.append(Text(w.w * (0.7 if d > 0 else 0.3), -1, "?", (1.0, 1.0, 0.7), 60, -0.04,
+                                90, anchor=w))
+        elif name == "monolith":                       # проходит над или под планетой
+            if H < 12:
+                return False
+            m = self.spawn("monolith", d=1)
+            m.vy = 0.0
+            ps = [p for p in self.planets if p.x > W * 0.3]
+            if ps:
+                p = max(ps, key=lambda p: p.R)
+                up, dn = p.y - p.R - m.h - 1, H - (p.y + p.R + 2) - m.h
+                if max(up, dn) >= 0:
+                    m.y = float(r.randint(0, int(up)) if up >= dn else
+                                r.randint(int(p.y + p.R + 2), int(p.y + p.R + 2 + dn)))
+        elif name in SPRITES and H >= len(SPRITES[name][0]) + 2:
             add(Ship(r, name, W, H))
+        else:
+            return False
+        return True
 
     def compose(self):
         W, H, t = self.W, self.H, self.t
@@ -1041,11 +2533,18 @@ class Scene:
                 ch[y][x] = c
                 co[y][x] = col
         sin = math.sin
+        mons = [(s.cx, s.cy) for s in self.ships if s.name == "monolith" and not s.hidden]
         for x, y, layer, ph, fr, tint, giant in self.stars:
             x = int(x)
             if x >= W:
                 continue
             tw = 0.5 + 0.5 * sin(t * fr + ph)
+            if mons:                                  # у монолита звёзды ярче
+                for mx, my in mons:
+                    if abs(x - mx) < 22 and abs(y - my) < 10:
+                        tw = 0.6 + 0.4 * tw
+                        layer = layer + 1 if layer < 2 else 2
+                        break
             if layer == 0:
                 b, c = 0.22 + 0.3 * tw, "."
             elif layer == 1:
@@ -1072,14 +2571,19 @@ class Scene:
             p.draw(put)
         if self.station:
             self.station.draw(put, t)
+        for a in self.acts:
+            a.under(put, t)
+        for p in self.debris:
+            put(int(p[0]), int(p[1]), p[4] if p[6] > 60 or t % 2 else ".", p[5])
         for s in self.ships:
             s.draw(put, t)
-        green = rgb(0.3, 1.0, 0.3)
         for b in self.bolts:
-            put(int(b[0]), b[1], "-", green)
-            put(int(b[0]) + 1, b[1], "-", green)
+            put(int(b[0]), b[1], "-", b[4])
+            put(int(b[0]) + 1, b[1], "-", b[4])
         for e in self.fx:
             e.draw(put)
+        for a in self.acts:
+            a.over(put, t)
         return ch, co
 
 
