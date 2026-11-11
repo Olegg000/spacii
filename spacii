@@ -12,7 +12,7 @@ import shutil
 import sys
 import time
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 TAU = math.pi * 2
 
 # ───────────────────────────── цвет ─────────────────────────────
@@ -523,8 +523,8 @@ class Scene:
                 if k < 0.3 and r.random() > 0.25 + k * 2:
                     continue
                 c = mix(ca, cb, (n.fbm(x * 0.012 + 40, y * 0.03, z + 9, 2) - 0.3) * 2.5)
-                b = 0.3 + 0.45 * k
-                rc[x] = "." if k < 0.3 else ":" if k < 0.55 else "░" if k < 0.85 else "▒"
+                b = 0.3 + 0.6 * k
+                rc[x] = "." if k < 0.3 else ":" if k < 0.6 else ";" if k < 0.88 else "%"
                 ro[x] = rgb(c[0] * b, c[1] * b, c[2] * b)
         if W >= 60 and H >= 16:
             self._galaxy(r.randint(W // 6, W * 5 // 6), r.randint(H // 5, H * 4 // 5),
@@ -681,7 +681,11 @@ def snapshot(args):
 
 def run(stdscr, args):
     import curses
-    curses.curs_set(0)
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    stdscr.leaveok(True)
     stdscr.nodelay(True)
     curses.start_color()
     try:
@@ -761,6 +765,8 @@ def run(stdscr, args):
                 pass
         prev = (ch, co)
         stdscr.refresh()
+        sys.stdout.write("\x1b[?25l")  # некоторые терминалы игнорируют curs_set
+        sys.stdout.flush()
         nxt += delay
         pause = nxt - time.monotonic()
         if pause > 0:
@@ -796,6 +802,9 @@ def main():
         curses.wrapper(run, args)
     except KeyboardInterrupt:
         pass
+    finally:
+        sys.stdout.write("\x1b[?25h")
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":
