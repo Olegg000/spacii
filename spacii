@@ -3,7 +3,7 @@
 """spacii - космос в терминале / deep space for your terminal.
 
 Один файл, только стандартная библиотека Python 3.8+.
-Клавиши: q выход, p пауза, r новая вселенная, c корабли вкл/выкл.
+Клавиши: q выход, p пауза, r новая вселенная, c корабли вкл/выкл, e событие.
 """
 import argparse
 import math
@@ -12,7 +12,7 @@ import shutil
 import sys
 import time
 
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 TAU = math.pi * 2
 
 # ───────────────────────────── цвет ─────────────────────────────
@@ -198,13 +198,14 @@ KINDS = [(_tex_gas, 4), (_tex_terra, 3), (_tex_rock, 2), (_tex_mars, 2),
 
 
 class Planet:
-    def __init__(self, rnd, R, x, y):
+    def __init__(self, rnd, R, x, y, kind=None, plain=False):
         self.R, self.x, self.y = R, float(x), float(y)
+        self.heat = 0.0
         self.rot = rnd.uniform(0, TW)
         self.spin = rnd.uniform(0.04, 0.12) * rnd.choice((1, 1, -1))
         self.speed = 0.012 + R * 0.004
         kinds = [k for k, w in KINDS for _ in range(w)]
-        kind = rnd.choice(kinds)
+        kind = kind or rnd.choice(kinds)
         n = Noise(rnd)
         f, atmo = kind(n, rnd)
         self.gas = kind is _tex_gas
@@ -238,7 +239,7 @@ class Planet:
         # кольца
         self.ring_back, self.ring_front = [], []
         self.ext = 2 * R + 4
-        if R >= 5 and (rnd.random() < (0.6 if self.gas else 0.15)):
+        if not plain and R >= 5 and (rnd.random() < (0.6 if self.gas else 0.15)):
             inner, outer = rnd.uniform(1.3, 1.5), rnd.uniform(1.9, 2.4)
             tilt, ang = rnd.uniform(0.2, 0.38), rnd.uniform(-0.35, 0.35)
             rc = rnd.choice([(0.9, 0.82, 0.62), (0.75, 0.8, 0.95), (0.95, 0.75, 0.6)])
@@ -270,7 +271,7 @@ class Planet:
                     (self.ring_back if back else self.ring_front).append(item)
         # луны
         self.moons = []
-        for _ in range(rnd.choice((0, 0, 1, 1, 2)) if R >= 4 else 0):
+        for _ in range(rnd.choice((0, 0, 1, 1, 2)) if R >= 4 and not plain else 0):
             g = rnd.uniform(0.6, 0.95)
             self.moons.append([rnd.uniform(1.5, 2.6), rnd.uniform(0.008, 0.03),
                                rnd.uniform(0, TAU), rnd.uniform(0.12, 0.3),
@@ -296,10 +297,14 @@ class Planet:
                 front.append((cx + int(round(mx * 2 * R)), cy + int(round(my * R)), c))
         for dx, dy, ch, c in self.halo:
             put(cx + dx, cy + dy, ch, c)
-        tex, shift, n = self.tex, int(self.rot), len(RAMP)
+        tex, shift, n, heat = self.tex, int(self.rot), len(RAMP), self.heat
         for dx, dy, ti, tj, lum in self.cells:
             r, g, b, e = tex[tj][(ti + shift) % TW]
             l = lum * 1.12 + 0.015
+            if heat:
+                r, g, b = r + (1 - r) * heat, g + (1 - g) * heat, b + (0.8 - b) * heat
+                if heat > l:
+                    l = heat
             if e > l:
                 l = e
             if l < 0.05:
@@ -317,6 +322,7 @@ class Planet:
 
 W_ = (0.92, 0.94, 1.0)
 GREY = (0.6, 0.63, 0.7)
+ROCK = (0.56, 0.5, 0.43)
 MIRROR = str.maketrans("/\\()[]{}<>`'", "\\/)(][}{><'`")
 
 # name: (art, основной цвет, {символ: цвет}, строки с пламенем, скорость, зеркалить)
@@ -335,6 +341,11 @@ SPRITES = {
         r" /_/",
     ], (0.7, 0.9, 0.75), {"o": (1.0, 0.9, 0.3), "-": (1.0, 0.4, 0.3)},
         (2,), (0.9, 1.5), True),
+    "ion": ([
+        r" |     |",
+        r" |-(o)-|",
+        r" |     |",
+    ], (0.62, 0.66, 0.72), {"o": (0.9, 0.25, 0.25), "(": W_, ")": W_}, (), (0.8, 1.2), False),
     "freighter": ([
         r"        ____________",
         r"  _____/_|_|_|_|_|_|\______",
@@ -343,6 +354,14 @@ SPRITES = {
     ], (0.75, 0.72, 0.65), {":": (1.0, 0.85, 0.4), "|": GREY, "=": (0.4, 0.8, 1.0),
                             ">": (0.9, 0.35, 0.3)},
         (2,), (0.2, 0.32), True),
+    "destroyer": ([
+        r"       __",
+        r" ]=___/||\_______",
+        r" ]=|____::____:::`--..__",
+        r" ]=|______::::______..--'",
+        r" ]=|_________..--''",
+    ], (0.78, 0.8, 0.85), {":": (1.0, 0.9, 0.5), "]": (0.4, 0.7, 1.0), "=": (0.4, 0.7, 1.0)},
+        (1, 2, 3, 4), (0.14, 0.2), True),
     "ufo": ([
         r"       _.---._",
         r"     .'  @ @  '.",
@@ -350,12 +369,31 @@ SPRITES = {
         r" (__o__o__o__o__o__)",
         r"     `---------'",
     ], (0.65, 0.75, 0.8), {"@": (0.5, 1.0, 0.5)}, (), (0.25, 0.45), False),
+    "abduction": ([
+        r"       _.---._",
+        r"     .'  @ @  '.",
+        r"  __/___________\__",
+        r" (__o__o__o__o__o__)",
+        r"     `---------'",
+        r"      /   :   \ ",
+        r"     /  ^__^   \ ",
+        r"    /   (oo)\___\__",
+        r"        (__)\      )\ ",
+        r"            ||--w||",
+    ], (0.65, 0.75, 0.8), {"@": (0.5, 1.0, 0.5), "/": (0.9, 0.9, 0.4), "\\": (0.9, 0.9, 0.4),
+                           ":": (0.9, 0.9, 0.4), "^": W_, "(": W_, ")": W_, "|": W_, "w": W_,
+                           "o": W_}, (), (0.15, 0.25), False),
     "satellite": ([
         r" +---+   .   +---+",
         r" |###|==(o)==|###|",
         r" +---+   '   +---+",
     ], GREY, {"#": (0.25, 0.45, 1.0), "o": (1.0, 0.3, 0.3), "=": (0.9, 0.8, 0.5)},
         (), (0.1, 0.18), False),
+    "orbital": ([
+        r" [##]=[##]    |    [##]=[##]",
+        r" [##]=[##]==[=O=]==[##]=[##]",
+        r" [##]=[##]    |    [##]=[##]",
+    ], GREY, {"#": (0.3, 0.5, 1.0), "O": W_, "=": (0.85, 0.8, 0.6)}, (), (0.07, 0.12), False),
     "astronaut": ([
         r"   .-.",
         r"  ( @ )",
@@ -367,53 +405,102 @@ SPRITES = {
         r" --(O)==<",
         r"    / ",
     ], (0.85, 0.8, 0.6), {"O": (0.95, 0.95, 1.0), "<": GREY}, (), (0.3, 0.5), True),
+    "car": ([
+        r"     ___",
+        r"  __/_@_\___",
+        r" '-(_)---(_)-'",
+    ], (0.9, 0.2, 0.2), {"@": W_, "(": GREY, ")": GREY, "_": (0.9, 0.2, 0.2)}, (), (0.15, 0.3), True),
+    "teapot": ([
+        r"      _..._",
+        r"    .(_____)  ,",
+        r"  c|        |/'",
+        r"    `.____.'",
+    ], (0.85, 0.8, 0.9), {}, (), (0.06, 0.12), True),
+    "whale": ([
+        r"   ,                 _..----.._",
+        r"  /(           _..--'      o   `.",
+        r" (  `-.___..--'             ___.'",
+        r"  \(,      `----.......---''",
+    ], (0.4, 0.6, 0.95), {"o": (0.6, 1.0, 1.0), ".": (0.55, 0.75, 1.0)}, (), (0.1, 0.16), True),
+    "jelly": ([
+        r"   .-'''-.",
+        r"  /  o o  \ ",
+        r"  \_.-.-._/",
+        r"   ) ( ) (",
+        r"  (  ) (  )",
+        r"   )  (  (",
+    ], (0.95, 0.5, 0.9), {"o": (1.0, 1.0, 0.6), ")": (0.6, 0.4, 1.0), "(": (0.6, 0.4, 1.0)},
+        (), (0.0, 0.03), False),
+    "rock1": ([r"  .-.", r" (  ,)", r"  `-'"], ROCK, {}, (), (0.2, 0.45), False),
+    "rock2": ([r"   __", r"  /. \_", r" (   , )", r"  \__./"], ROCK, {}, (), (0.2, 0.45), False),
+    "rock3": ([r" (@)"], ROCK, {}, (), (0.2, 0.45), False),
+    "rock4": ([r" o"], ROCK, {}, (), (0.2, 0.45), False),
 }
+ANIM = {"jelly": {3: r"  (  ) (  )", 4: r"   ) ( ) (", 5: r"  (  )  ) )"}}
+ROCKS = ["rock1", "rock2", "rock3", "rock3", "rock4", "rock4", "rock4"]
 SHIP_WEIGHTS = ["rocket"] * 3 + ["fighter"] * 3 + ["ufo"] * 2 + ["satellite"] * 2 + \
-               ["probe"] * 2 + ["freighter", "astronaut"]
+               ["probe"] * 2 + ["ion"] * 2 + ["freighter", "astronaut", "orbital", "car",
+                                              "teapot", "rock2"]
+JUMPERS = ("fighter", "rocket", "freighter")
 BLINK = [(1.0, 0.25, 0.25), (1.0, 0.85, 0.2), (0.3, 1.0, 0.4), (0.3, 0.8, 1.0), (0.9, 0.4, 1.0)]
 
 
 class Ship:
-    def __init__(self, rnd, name, W, H):
+    def __init__(self, rnd, name, W, H, d=None, x=None, y=None, vx=None):
         art, base, cmap, flames, (v0, v1), mirror = SPRITES[name]
         self.name = name
-        self.dir = rnd.choice((1, -1))
+        self.dir = d or rnd.choice((1, -1))
+        flip = self.dir < 0 and mirror
         width = max(len(l) for l in art)
-        lines = [l.rstrip().ljust(width) for l in art]
-        if self.dir < 0 and mirror:
-            lines = [l[::-1].translate(MIRROR) for l in lines]
-        self.lines, self.w, self.h = lines, width, len(lines)
+
+        def prep(l):
+            l = l.rstrip().ljust(width)
+            return l[::-1].translate(MIRROR) if flip else l
+        self.lines, self.w, self.h = [prep(l) for l in art], width, len(art)
+        self.alt = {j: prep(l) for j, l in ANIM.get(name, {}).items()}
         self.base = rgb(*base)
-        self.cmap = {(k.translate(MIRROR) if self.dir < 0 and mirror else k): rgb(*v)
-                     for k, v in cmap.items()}
+        self.cmap = {(k.translate(MIRROR) if flip else k): rgb(*v) for k, v in cmap.items()}
         self.flames = flames
-        self.vx = rnd.uniform(v0, v1) * self.dir
-        self.vy = rnd.uniform(-0.02, 0.02) if name in ("astronaut", "satellite", "probe") else 0.0
-        self.x = float(-width - 6 if self.dir > 0 else W + 6)
-        self.y = float(rnd.randint(1, max(1, H - self.h - 1)))
-        self.bob = rnd.uniform(1.0, 2.5) if name == "ufo" else 0.0
+        self.vx = vx if vx is not None else rnd.uniform(v0, v1) * self.dir
+        self.vy = rnd.uniform(-0.02, 0.02) if name in ("astronaut", "satellite", "probe", "teapot",
+                                                       "car", "orbital") or name[:4] == "rock" else 0.0
+        self.x = float(-width - 6 if self.dir > 0 else W + 6) if x is None else float(x)
+        self.y = float(rnd.randint(1, max(1, H - self.h - 1))) if y is None else float(y)
+        if name == "jelly":
+            self.x = rnd.uniform(4, max(5, W - width - 4))
+            self.y = H + 1 + rnd.uniform(0, 10)
+            self.vy = -rnd.uniform(0.05, 0.1)
+        self.bob = {"ufo": 2.0, "abduction": 1.2, "whale": 1.6}.get(name, 0.0) * rnd.uniform(0.6, 1.2)
         self.ph = rnd.uniform(0, TAU)
         self.rnd = rnd
+        self.gun, self.prey, self.dead = 0, False, False
+        self.jump = None
+        if name in JUMPERS and x is None and rnd.random() < 0.3:
+            self.jump = rnd.uniform(W * 0.3, W * 0.7)
 
     def step(self):
         self.x += self.vx
         self.y += self.vy
 
-    def gone(self, W):
-        return self.x > W + 10 or self.x < -self.w - 10
+    def gone(self, W, H):
+        return self.dead or self.x > W + 90 or self.x < -self.w - 90 or self.y < -self.h - 2 \
+            or self.y > H + 14
 
     def draw(self, put, t):
         x0 = int(round(self.x))
         y0 = int(round(self.y + math.sin(t * 0.07 + self.ph) * self.bob))
-        ufo = self.name == "ufo"
+        lights = self.name in ("ufo", "abduction")
+        alt = self.alt if (t // 9) % 2 else None
         for j, line in enumerate(self.lines):
+            if alt and j in alt:
+                line = alt[j]
             s = line.strip()
             if not s:
                 continue
             a = len(line) - len(line.lstrip())
             for i, ch in enumerate(s):
                 c = self.cmap.get(ch, self.base)
-                if ufo and ch == "o":
+                if lights and j == 3 and ch == "o":
                     c = rgb(*BLINK[(i // 3 + t // 4) % len(BLINK)])
                 elif ch == "o" and self.name == "satellite" and (t // 12) % 2:
                     c = rgb(0.3, 0.08, 0.08)
@@ -425,6 +512,245 @@ class Ship:
                     c = rgb(1.0, 0.25 + 0.7 * heat * self.rnd.uniform(0.6, 1), 0.15 * heat)
                     fx = x0 + a - 1 - k if self.dir > 0 else x0 + a + len(s) + k
                     put(fx, y0 + j, self.rnd.choice("=~-:" if k < 3 else "-:."), c)
+
+
+class Streak:
+    """Прыжок в гиперпространство."""
+
+    def __init__(self, x, y, d, rows):
+        self.x, self.y, self.d, self.rows, self.age = int(x), int(y), d, rows, 0
+
+    def step(self):
+        self.age += 1
+
+    @property
+    def done(self):
+        return self.age > 10
+
+    def draw(self, put):
+        ln = 3 + self.age * self.age * 2
+        fade = 1 - self.age / 11
+        for r in range(self.rows):
+            for i in range(ln):
+                k = i / ln * fade
+                put(self.x + self.d * i, self.y + r, "=" if i > ln * 0.6 else "-",
+                    rgb(0.5 * k + 0.2 * fade, 0.8 * k + 0.1 * fade, k + 0.2 * fade))
+
+
+class Explosion:
+    def __init__(self, rnd, x, y, R, cols, fuse=0):
+        self.x, self.y, self.R, self.age = x, y, R, 0
+        self.fuse = self.fuse0 = fuse
+        self.parts = []
+        for _ in range(int(30 + R * R * 7)):
+            a = rnd.uniform(0, TAU)
+            d = rnd.random() ** 0.5 * R
+            sp = rnd.uniform(0.05, 0.22) * (1 + R * 0.25) * (0.3 + d / max(R, 1))
+            life = rnd.randint(30, 60 + R * 22)
+            self.parts.append([x + math.cos(a) * d * 2, y + math.sin(a) * d, math.cos(a) * sp * 2,
+                               math.sin(a) * sp, life, life, rnd.choice("#*+o:.'`,"),
+                               rnd.choice(cols)])
+        self.ring_life = 40 + R * 10
+
+    def step(self):
+        if self.fuse > 0:
+            self.fuse -= 1
+            return
+        self.age += 1
+        for p in self.parts:
+            p[0] += p[2]
+            p[1] += p[3]
+            p[2] *= 0.99
+            p[3] *= 0.99
+            p[4] -= 1
+        self.parts = [p for p in self.parts if p[4] > 0]
+
+    @property
+    def done(self):
+        return self.fuse <= 0 and not self.parts and self.age > self.ring_life
+
+    def draw(self, put):
+        x0, y0, R, a = int(round(self.x)), int(round(self.y)), self.R, self.age
+        if self.fuse > 0:
+            k = 1 - self.fuse / self.fuse0
+            w = rgb(1, 1, 1)
+            for i in range(1, int(k * 6) + 1):
+                c = rgb(1 - i * 0.12, 1 - i * 0.12, 1)
+                put(x0 - i, y0, "-", c)
+                put(x0 + i, y0, "-", c)
+                if i % 2 == 0:
+                    put(x0, y0 - i // 2, "|", c)
+                    put(x0, y0 + i // 2, "|", c)
+            put(x0, y0, "✦" if k > 0.3 else "*", w)
+            return
+        if a < self.ring_life:
+            rad = R + a * (0.35 + R * 0.06)
+            fade = 1 - a / self.ring_life
+            c = rgb(0.6 * fade, 0.8 * fade, fade)
+            n = int(rad * 10) + 8
+            for i in range(n):
+                th = i / n * TAU
+                put(x0 + int(round(math.cos(th) * rad * 2)), y0 + int(round(math.sin(th) * rad)),
+                    ":" if fade > 0.5 else "·", c)
+        for p in self.parts:
+            f = p[4] / p[5]
+            col, hot = p[7], f * f
+            put(int(p[0]), int(p[1]), p[6] if f > 0.3 else ".",
+                rgb(col[0] * f + hot * 0.5, col[1] * f + hot * 0.3, col[2] * f))
+        if a < 8:
+            rr = R * (0.6 + a * 0.15)
+            for dy in range(-int(rr), int(rr) + 1):
+                w = int(2 * math.sqrt(max(0.0, rr * rr - dy * dy)))
+                for dx in range(-w, w + 1):
+                    put(x0 + dx, y0 + dy, "@" if a < 4 else "#", rgb(1, 1, 1 - a * 0.08))
+
+
+class BlackHole:
+    def __init__(self, rnd, W, H):
+        self.R = R = max(3, min(5, H // 9))
+        self.ext = R * 6
+        self.x = float(W + self.ext + 1)
+        self.y = float(rnd.randint(R + 3, max(R + 3, H - R - 4)))
+        self.cells = []
+        rr = R + 0.3
+        for dy in range(-R - 2, R + 3):
+            for dx in range(-self.ext, self.ext + 1):
+                px, py = dx / (2 * rr), dy / rr
+                d = math.hypot(px, py)
+                q = math.hypot(px, py / 0.2)
+                if 1.25 < q < 2.7 and (py >= 0 or d >= 1):
+                    self.cells.append((dx, dy, 2, math.atan2(py / 0.2, px), (q - 1.25) / 1.45))
+                elif d < 0.92:
+                    self.cells.append((dx, dy, 0, 0.0, 0.0))
+                elif d < 1.15:
+                    self.cells.append((dx, dy, 1, math.atan2(py, px), 0.0))
+                elif d < 1.5 and py < 0:
+                    self.cells.append((dx, dy, 3, math.atan2(py, px), (d - 1.15) / 0.35))
+
+    def step(self):
+        self.x -= 0.06
+
+    def draw(self, put, t):
+        cx, cy, sin = int(round(self.x)), int(round(self.y)), math.sin
+        for dx, dy, k, a, q in self.cells:
+            if k == 0:
+                put(cx + dx, cy + dy, " ", BLACK)
+            elif k == 1:
+                b = 0.75 + 0.25 * sin(a * 2 + t * 0.1)
+                put(cx + dx, cy + dy, "@" if b > 0.85 else "#", rgb(b, b * 0.85, b * 0.5))
+            elif k == 2:
+                b = (0.55 + 0.45 * sin(a * 2 - t * 0.12 + q * 5)) * (1 - 0.5 * q) * \
+                    (1.15 if dx < 0 else 0.8)
+                put(cx + dx, cy + dy, "=" if b > 0.6 else "-" if b > 0.35 else "·",
+                    rgb(b, b * (0.75 - 0.35 * q), b * (0.4 - 0.3 * q)))
+            else:
+                b = (1 - q) * 0.7 * (0.7 + 0.3 * sin(a * 3 + t * 0.1))
+                if b > 0.12:
+                    put(cx + dx, cy + dy, ":" if b > 0.4 else ".", rgb(b, b * 0.6, b * 0.2))
+
+
+def _tex_station(side):
+    def kind(n, rnd):
+        c = (0.81, -0.42, 0.4 * side)
+
+        def f(p, lat):
+            lon = math.atan2(p[2], p[0])
+            g = 0.48 + 0.25 * n.n3(math.floor(lon * 9) * 1.7, math.floor(lat * 11) * 1.3, 1.5)
+            if abs(lat) < 0.05:
+                g = 0.18
+            d = math.sqrt((p[0] - c[0]) ** 2 + (p[1] - c[1]) ** 2 + (p[2] - c[2]) ** 2)
+            if d < 0.36:
+                g = 0.9 if d > 0.29 else 0.95 if d < 0.07 else 0.25 + d
+            elif n.n3(lon * 40, lat * 40, 7.0) > 0.84:
+                return (1.0, 0.9, 0.5, 0.45)
+            return (g, g, g * 1.06, 0.0)
+        return f, None
+    return kind
+
+
+class Station:
+    """Боевая станция размером с луну."""
+
+    def __init__(self, rnd, W, H, target):
+        self.rnd, self.W = rnd, W
+        self.R = R = max(4, min(8, H // 5))
+        self.target = target
+        self.side = 1 if (target is None or target.x < W / 2) else -1   # 1: станция справа
+        self.p = p = Planet(rnd, R, 0, 0, kind=_tex_station(-self.side), plain=True)
+        p.spin = p.speed = p.rot = 0.0
+        self.ext = 2 * R + 3
+        self.home = W + self.ext if self.side > 0 else -self.ext
+        p.x = float(self.home)
+        ty = target.y + rnd.randint(-5, 5) if target else rnd.randint(R + 1, max(R + 1, H - R - 2))
+        p.y = float(max(R + 1, min(H - R - 2, ty)))
+        self.stop = W * (0.85 if self.side > 0 else 0.15)
+        self.state, self.age, self.done = "in", 0, False
+        if target is None or abs(self.stop - target.x) < 2 * (R + target.R) + 8:
+            self.target, self.state = None, "pass"
+
+    def step(self, scene):
+        p, s = self.p, self.side
+        self.age += 1
+        if self.target is not None and self.target not in scene.planets:
+            self.target, self.state = None, "out"
+        st = self.state
+        if st == "pass":
+            p.x -= 0.14 * s
+            self.done = (p.x + self.ext < 0) if s > 0 else (p.x - self.ext > self.W)
+        elif st == "in":
+            p.x -= 0.3 * s
+            if (p.x - self.stop) * s <= 0:
+                self.state, self.age = "charge", 0
+        elif st == "charge":
+            if self.age > 50:
+                self.state, self.age = "fire", 0
+        elif st == "fire":
+            self.target.heat = min(1.0, self.age / 38)
+            if self.age > 44:
+                scene.destroy(self.target)
+                self.target, self.state, self.age = None, "wait", 0
+        elif st == "wait":
+            if self.age > 80:
+                self.state = "out"
+        else:
+            p.x += 0.35 * s
+            self.done = (p.x - self.home) * s >= 0
+
+    def draw(self, put, t):
+        p, R, r = self.p, self.R, self.rnd
+        p.draw(put)
+        cx, cy = int(round(p.x)), int(round(p.y))
+        for i in range(-2 * R + 2, 2 * R - 1):          # экваториальный жёлоб
+            b = 0.3 - 0.12 * i / (2 * R)
+            put(cx + i, cy, "+" if i % 5 == 0 else "=", rgb(b, b, b * 1.1))
+        dx = cx + int(round(-self.side * 0.4 * 2 * (R + 0.35)))
+        dy = cy + int(round(-0.42 * (R + 0.35)))
+        rim = rgb(0.92, 0.92, 0.97)                     # тарелка
+        for j, row in enumerate((" .-. ", "( o )", " `-' ") if R >= 6 else ("(o)",)):
+            for i, ch in enumerate(row):
+                if ch != " " or j == 1:
+                    put(dx - len(row) // 2 + i, dy - (1 if R >= 6 else 0) + j, ch,
+                        rgb(0.2, 0.45, 0.2) if ch == "o" else rim)
+        if self.state == "charge":
+            k = self.age / 50
+            for _ in range(int(2 + k * 8)):
+                rad = (1 - k) * 4 + 1
+                a = r.uniform(0, TAU)
+                put(dx + int(math.cos(a) * rad * 2), dy + int(math.sin(a) * rad), ".",
+                    rgb(0.2, 0.5 + 0.5 * r.random(), 0.2))
+            put(dx, dy, "*", rgb(0.3 + 0.7 * k, 1, 0.3 + 0.7 * k))
+        elif self.state == "fire":
+            tx, ty = int(round(self.target.x)), int(round(self.target.y))
+            ex, ey = tx - dx, ty - dy
+            n = max(abs(ex), abs(ey), 1)
+            slope = ey / ex if ex else 9
+            ch = "=" if abs(slope) < 0.18 else "~" if abs(slope) < 0.5 else \
+                ("\\" if slope > 0 else "/")
+            for i in range(n + 1):
+                f = r.uniform(0.7, 1)
+                put(dx + ex * i // n, dy + ey * i // n, ch,
+                    rgb(1, 1, 1) if (i + t) % 5 == 0 else rgb(0.25 * f, f, 0.25 * f))
+            put(dx, dy, "@", rgb(0.8, 1, 0.8))
 
 
 class Meteor:
@@ -492,6 +818,8 @@ class Comet:
 
 # ───────────────────────────── сцена ────────────────────────────
 
+EVENTS = ["station", "dogfight", "formation", "asteroids", "blackhole", "supernova",
+          "whale", "jellies", "destroyer", "abduction"]
 NEBULAE = [((0.75, 0.15, 0.7), (0.15, 0.3, 0.9)), ((0.1, 0.6, 0.65), (0.5, 0.2, 0.8)),
            ((0.85, 0.3, 0.2), (0.7, 0.15, 0.6)), ((0.2, 0.35, 0.9), (0.15, 0.7, 0.55))]
 TINTS = [(1, 1, 1), (1, 1, 1), (0.72, 0.82, 1.0), (1.0, 0.95, 0.72), (1.0, 0.76, 0.62)]
@@ -538,6 +866,8 @@ class Scene:
                                r.uniform(0.03, 0.16), r.choice(TINTS),
                                layer == 2 and r.random() < 0.3])
         self.planets, self.ships, self.meteors, self.comets = [], [], [], []
+        self.fx, self.bolts, self.holes, self.station, self.deck = [], [], [], None, []
+        self.event_in = r.randint(160, 320)
         big = max(3, min(H // 3, W // 9, 13))
         if H >= 12:
             R = r.randint(max(3, big - 3), big)
@@ -596,17 +926,48 @@ class Scene:
             p.x = W + p.ext + 1
             self.planets.append(p)
             self.planet_in = r.randint(900, 2200)
-        for group in (self.ships, self.meteors, self.comets):
+        t = self.t
+        for s in self.ships:
+            s.step()
+            if s.gun and t % s.gun == 0 and 0 < s.x < W:
+                self.bolts.append([s.x + (s.w if s.dir > 0 else -2), int(round(s.y)) + s.h // 2,
+                                   s.dir * 2.4, 45])
+            if s.jump is not None and (s.x - s.jump) * s.dir > 0:
+                self.fx.append(Streak(s.x + (0 if s.dir > 0 else s.w), s.y + 1, s.dir,
+                                      max(1, s.h - 2)))
+                s.dead = True
+        for b in self.bolts:
+            b[0] += b[2]
+            b[3] -= 1
+            for s in self.ships:
+                if s.prey and not s.dead and s.x <= b[0] <= s.x + s.w and \
+                        s.y <= b[1] < s.y + s.h and r.random() < 0.3:
+                    self.fx.append(Explosion(r, s.x + s.w / 2, s.y + s.h / 2, 1,
+                                             [(1, 0.8, 0.3), (1, 0.4, 0.1), (0.8, 0.8, 0.8)]))
+                    s.dead, b[3] = True, 0
+        self.bolts = [b for b in self.bolts if b[3] > 0]
+        for group in (self.meteors, self.comets, self.fx, self.holes):
             for e in group:
                 e.step()
-        self.ships = [s for s in self.ships if not s.gone(W)]
+        self.fx = [e for e in self.fx if not e.done]
+        self.holes = [h for h in self.holes if h.x > -h.ext - 2]
+        if self.station:
+            self.station.step(self)
+            if self.station.done:
+                self.station = None
+        self.ships = [s for s in self.ships if not s.gone(W, H)]
         self.comets = [c for c in self.comets if not c.gone(W)]
         self.meteors = [m for m in self.meteors if m.age < m.life]
+        if self.ships_on:
+            self.event_in -= 1
+            if self.event_in <= 0:
+                self.event()
+                self.event_in = r.randint(450, 800)
         if r.random() < 0.012:
             self.meteors.append(Meteor(r, W, H))
         if self.ships_on:
             self.ship_in -= 1
-            if self.ship_in <= 0 and len(self.ships) < 3:
+            if self.ship_in <= 0 and len(self.ships) < 4:
                 name = r.choice(SHIP_WEIGHTS)
                 if H >= len(SPRITES[name][0]) + 2:
                     self.ships.append(Ship(r, name, W, H))
@@ -615,6 +976,60 @@ class Scene:
         if self.comet_in <= 0:
             self.comets.append(Comet(r, W, H))
             self.comet_in = r.randint(700, 1800)
+
+    def destroy(self, planet):
+        self.planets.remove(planet)
+        cols = [planet.tex[j][i][:3] for j in range(4, TH, 8) for i in range(0, TW, 12)]
+        self.fx.append(Explosion(self.rnd, planet.x, planet.y, planet.R, cols))
+        self.planet_in = min(self.planet_in, 260)
+
+    def event(self, name=None):
+        r, W, H = self.rnd, self.W, self.H
+        if not self.deck:
+            self.deck = EVENTS[:]
+            r.shuffle(self.deck)
+        name = name or self.deck.pop()
+        d = r.choice((1, -1))
+        add = self.ships.append
+        if name == "station":
+            if self.station or H < 20 or W < 80:
+                return
+            cands = [p for p in self.planets if W * 0.12 < p.x < W * 0.88]
+            self.station = Station(r, W, H, max(cands, key=lambda p: p.R) if cands else None)
+        elif name == "dogfight":
+            prey = Ship(r, "fighter", W, H, d=d, vx=d * 0.8)
+            prey.prey, prey.jump = True, None
+            add(prey)
+            for k, dy in ((1, 3), (2, -3)):
+                c = Ship(r, "ion", W, H, d=d, x=prey.x - d * (12 * k + 8), y=prey.y + dy,
+                         vx=prey.vx * 1.04)
+                c.gun = r.randint(9, 14)
+                add(c)
+        elif name == "formation":
+            lead = Ship(r, r.choice(("ion", "fighter")), W, H, d=d)
+            lead.jump = None
+            add(lead)
+            for k in (1, 2):
+                for sg in (1, -1):
+                    add(Ship(r, lead.name, W, H, d=d, x=lead.x - d * 9 * k,
+                             y=lead.y + sg * 3 * k, vx=lead.vx))
+        elif name == "asteroids":
+            for _ in range(r.randint(9, 16)):
+                s = Ship(r, r.choice(ROCKS), W, H, d=d)
+                s.x -= d * r.uniform(0, 70)
+                add(s)
+        elif name == "blackhole":
+            if not self.holes and H >= 20:
+                self.holes.append(BlackHole(r, W, H))
+        elif name == "supernova":
+            self.fx.append(Explosion(r, r.randint(8, max(9, W - 8)), r.randint(4, max(5, H - 4)), 2,
+                                     [(1, 1, 1), (0.6, 0.8, 1), (1, 0.7, 0.9), (1, 0.9, 0.6)],
+                                     fuse=45))
+        elif name == "jellies":
+            for _ in range(r.randint(3, 6)):
+                add(Ship(r, "jelly", W, H))
+        elif H >= len(SPRITES[name][0]) + 2:
+            add(Ship(r, name, W, H))
 
     def compose(self):
         W, H, t = self.W, self.H, self.t
@@ -651,10 +1066,20 @@ class Scene:
             m.draw(put)
         for c in self.comets:
             c.draw(put)
+        for h in self.holes:
+            h.draw(put, t)
         for p in sorted(self.planets, key=lambda p: p.R):
             p.draw(put)
+        if self.station:
+            self.station.draw(put, t)
         for s in self.ships:
             s.draw(put, t)
+        green = rgb(0.3, 1.0, 0.3)
+        for b in self.bolts:
+            put(int(b[0]), b[1], "-", green)
+            put(int(b[0]) + 1, b[1], "-", green)
+        for e in self.fx:
+            e.draw(put)
         return ch, co
 
 
@@ -664,7 +1089,9 @@ def snapshot(args):
     size = shutil.get_terminal_size((100, 32))
     W, H = args.width or size.columns, args.height or size.lines - 1
     sc = Scene(W, H, args.seed, not args.calm)
-    for _ in range(args.snapshot):
+    for i in range(args.snapshot):
+        if args.event and i == 5:
+            sc.event(args.event)
         sc.step()
     ch, co = sc.compose()
     out = []
@@ -737,6 +1164,8 @@ def run(stdscr, args):
                 paused = not paused
             elif k in (ord("r"), ord("R")):
                 sc, prev = new_scene()
+            elif k in (ord("e"), ord("E")):
+                sc.event()
             elif k in (ord("c"), ord("C")):
                 sc.ships_on = not sc.ships_on
             elif k == curses.KEY_RESIZE:
@@ -778,7 +1207,7 @@ def run(stdscr, args):
 def main():
     ap = argparse.ArgumentParser(
         prog="spacii", description="Космос в терминале. Клавиши: q выход, p пауза, "
-        "r новая вселенная, c корабли вкл/выкл.")
+        "r новая вселенная, c корабли вкл/выкл, e событие.")
     ap.add_argument("-t", "--transparent", action="store_true",
                     help="не заливать фон чёрным (для прозрачных терминалов)")
     ap.add_argument("-c", "--calm", action="store_true", help="без кораблей, только космос")
@@ -786,6 +1215,7 @@ def main():
     ap.add_argument("-s", "--seed", type=int, help="зерно: одна и та же вселенная каждый раз")
     ap.add_argument("--snapshot", type=int, metavar="N",
                     help="напечатать один кадр после N шагов и выйти")
+    ap.add_argument("--event", help=argparse.SUPPRESS)
     ap.add_argument("--width", type=int, help=argparse.SUPPRESS)
     ap.add_argument("--height", type=int, help=argparse.SUPPRESS)
     ap.add_argument("-v", "--version", action="version", version="spacii " + VERSION)
